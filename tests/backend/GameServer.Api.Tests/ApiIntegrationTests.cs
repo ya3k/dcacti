@@ -1670,9 +1670,10 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         Assert.DoesNotContain("pet_instance_wire_1", serialized, StringComparison.Ordinal);
 
         // The envelope still carries the documented members, so the absence above is
-        // a real exclusion rather than an empty payload.
+        // a real exclusion rather than an empty payload. §3 item 5: a committed Swap
+        // batch also carries its optional combatTrace.
         Assert.Equal(
-            new[] { "battleId", "events", "intermediatePetHp", "serverSequence" },
+            new[] { "battleId", "combatTrace", "events", "intermediatePetHp", "serverSequence" },
             payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
         await hubConnection.StopAsync();
@@ -3060,8 +3061,9 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
     public async Task Swap_ShouldSendExactlyOneReceiveEventsBatch_WithTheDocumentedMembers()
     {
         // SIGNALR_PROTOCOL.md §3: one ReceiveEvents call per resolved action, whose
-        // payload carries battleId, serverSequence, events[], and intermediatePetHp
-        // — no state, no board, no Status (§3.1 item 3, §8.3).
+        // payload carries battleId, serverSequence, events[], intermediatePetHp, and
+        // the optional combatTrace (§3 item 5, §3.3) — no state, no board, no Status
+        // (§3.1 item 3, §8.3).
         const string battleId = "battle-events-accepted";
         var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
@@ -3096,16 +3098,45 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
             Assert.Equal(battleId, payload.GetProperty("battleId").GetString());
 
-            // Exactly the documented envelope members (§3).
+            // Exactly the documented envelope members (§3, §3 item 5).
             Assert.Equal(
-                new[] { "battleId", "events", "intermediatePetHp", "serverSequence" },
+                new[] { "battleId", "combatTrace", "events", "intermediatePetHp", "serverSequence" },
                 payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
+            // §3 item 5 / §3.3: the trace is correlated with the envelope it rides on,
+            // and its structural members are present for a committed Swap.
+            var trace = payload.GetProperty("combatTrace");
+            Assert.Equal(JsonValueKind.Object, trace.ValueKind);
+            Assert.Equal(battleId, trace.GetProperty("battleId").GetString());
+            Assert.Equal(
+                payload.GetProperty("serverSequence").GetInt32(),
+                trace.GetProperty("serverSequence").GetInt32());
+            Assert.Equal("swap", trace.GetProperty("move").GetProperty("kind").GetString());
+            Assert.Equal(JsonValueKind.Array, trace.GetProperty("cycles").ValueKind);
+            Assert.Equal(JsonValueKind.Array, trace.GetProperty("damage").ValueKind);
+            Assert.Equal(JsonValueKind.Array, trace.GetProperty("healing").ValueKind);
+            Assert.Equal(JsonValueKind.Object, trace.GetProperty("pet").ValueKind);
+            Assert.Equal(JsonValueKind.Object, trace.GetProperty("boss").ValueKind);
+
+            // The player's cycle and its identity are carried, never inferred.
+            var cycles = trace.GetProperty("cycles").EnumerateArray().ToArray();
+            Assert.NotEmpty(cycles);
+            Assert.Equal("player", cycles[0].GetProperty("actor").GetString());
+            Assert.Equal("board", cycles[0].GetProperty("action").GetString());
+            Assert.True(cycles[0].TryGetProperty("fromCell", out _));
+            Assert.Equal(
+                JsonValueKind.Array,
+                cycles[0].GetProperty("matchedGems").ValueKind);
+            Assert.Equal(
+                JsonValueKind.Array,
+                cycles[0].GetProperty("cascades").ValueKind);
+
             // No board snapshot, no Combo/Match duplication, no client sequence, no
-            // Status/lifecycle value (§3.1 item 3, §4 item 6, §8.3).
+            // Status/lifecycle value (§3.1 item 3, §4 item 6, §8.3). These are member
+            // prohibitions — "board" as a cycle action value is §3.3's, not a member.
             Assert.Equal(JsonValueKind.Array, payload.GetProperty("events").ValueKind);
-            Assert.DoesNotContain("board", payload.GetRawText(), StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("status", payload.GetRawText(), StringComparison.OrdinalIgnoreCase);
+            Assert.False(payload.TryGetProperty("board", out _));
+            Assert.False(payload.TryGetProperty("status", out _));
             Assert.False(payload.TryGetProperty("clientSequence", out _));
             Assert.False(payload.TryGetProperty("playerState", out _));
             Assert.False(payload.TryGetProperty("turn", out _));
@@ -3140,9 +3171,12 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        // The serialized envelope must completely omit intermediatePetHp
+        // The serialized envelope must completely omit intermediatePetHp and the
+        // Swap-only combatTrace (§3 items 4-5).
         Assert.False(payload.TryGetProperty("intermediatePetHp", out _));
         Assert.DoesNotContain("intermediatePetHp", payload.GetRawText(), StringComparison.Ordinal);
+        Assert.False(payload.TryGetProperty("combatTrace", out _));
+        Assert.DoesNotContain("combatTrace", payload.GetRawText(), StringComparison.Ordinal);
 
         // Exactly the three core envelope members (§3, §3.2.12 item 5)
         Assert.Equal(
@@ -3183,9 +3217,12 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        // The serialized envelope must completely omit intermediatePetHp
+        // The serialized envelope must completely omit intermediatePetHp and the
+        // Swap-only combatTrace (§3 items 4-5).
         Assert.False(payload.TryGetProperty("intermediatePetHp", out _));
         Assert.DoesNotContain("intermediatePetHp", payload.GetRawText(), StringComparison.Ordinal);
+        Assert.False(payload.TryGetProperty("combatTrace", out _));
+        Assert.DoesNotContain("combatTrace", payload.GetRawText(), StringComparison.Ordinal);
 
         // Exactly the three core envelope members (§3, §3.2.12 item 5)
         Assert.Equal(
@@ -4617,8 +4654,21 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         var payload = await batch.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         // §3.1 item 3: no board, no state, no Combo/Match duplication travels in the
-        // batch — the state push carries those.
-        Assert.DoesNotContain("board", payload.GetRawText(), StringComparison.OrdinalIgnoreCase);
+        // batch — the state push carries those. TASK-321 adds the trace's documented
+        // `"action": "board"` cycle *value* (§3.3.1), which is an action name, not a
+        // board member; the prohibition is therefore asserted as a member
+        // prohibition on the envelope, on every event item, and on the trace.
+        Assert.False(payload.TryGetProperty("board", out _));
+        Assert.DoesNotContain(
+            "board",
+            payload.GetProperty("events").EnumerateArray()
+                .SelectMany(e => e.EnumerateObject().Select(p => p.Name)),
+            StringComparer.OrdinalIgnoreCase);
+        if (payload.TryGetProperty("combatTrace", out var trace))
+        {
+            Assert.False(trace.TryGetProperty("board", out _));
+        }
+
         Assert.False(payload.TryGetProperty("playerState", out _));
 
         await hubConnection.StopAsync();

@@ -12,6 +12,7 @@ import {
 import type {
   BattleEventsEnvelope,
   BattleStateMetadata,
+  CombatTrace,
   RuntimeBattleState,
   RuntimeBoard,
   RuntimeCell,
@@ -50,6 +51,7 @@ import {
   INTERACTION_YOUR_TURN,
   MOVE_LOG_TITLE,
   adaptPresentedEvent,
+  combatTraceMoveLogRows,
   deliveredSwapOf,
   describeEventCallout,
   formatCardCastRejection,
@@ -4615,6 +4617,24 @@ export class BattleScene extends Phaser.Scene {
     }
 
     if (recordForMoveLog) {
+      // Trace rows come only from the envelope's own `combatTrace`. The runtime
+      // already treats a malformed or cross-battle trace as absent
+      // (`SIGNALR_PROTOCOL.md` §3.3.2 item 2); re-checking the same structural
+      // correlation here keeps a hand-built delivery from ever mixing another
+      // move's trace into these rows.
+      const trace = envelope.combatTrace;
+      if (
+        trace !== undefined &&
+        trace.battleId === envelope.battleId &&
+        trace.serverSequence === envelope.serverSequence
+      ) {
+        moveLog?.recordCombatTrace(trace, envelope.serverSequence);
+      }
+
+      // The sequence is committed with or without rows. A batch that produced no
+      // presentable event still consumed this resolution, and leaving the recorded
+      // counter behind would record it a second time on a re-delivery (TASK-321:
+      // the previous `presented.length > 0` guard also skipped this).
       moveLog?.commitSequence(envelope.serverSequence);
     }
 
@@ -7765,6 +7785,24 @@ function createDeveloperMoveLog(
           event,
         })
       );
+    },
+    /**
+     * Records the authoritative trace rows of one committed move
+     * (`SIGNALR_PROTOCOL.md` §3 item 5, §3.3).
+     *
+     * The rows are built from the delivered `combatTrace` and from nothing else:
+     * no DEF constant, no buff predicted from matched-Gem counts, no DEF inverted
+     * from mitigated damage, and no cycle attributed by array position
+     * (`AGENTS.md` §10, §3.3.2 items 2 and 4). A batch without a trace records no
+     * trace rows; its event rows are unaffected.
+     */
+    recordCombatTrace(trace: CombatTrace, at: number): void {
+      for (const row of combatTraceMoveLogRows(trace, at, readTurn(), () => {
+        ordinal += 1;
+        return ordinal;
+      })) {
+        append(formatMoveLogRow(row));
+      }
     },
     /** Records that a timeline was built from a delivered batch, before it plays. */
     recordQueued(at: number, phaseKinds: readonly PresentationPhaseKind[]): void {

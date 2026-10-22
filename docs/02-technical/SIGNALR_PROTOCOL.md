@@ -1,6 +1,6 @@
 # SignalR Protocol
 
-**Version:** 2.30 (§3.2.2 and §3.2.30 updated and **§3.2.18 RETIRED IN PLACE** per **TASK-313 / ADR-029 Slice 5** (OD-311-2 = A): the `BossSkillCast` discriminator is removed from the closed set and its DTO — including the `skillId` member — no longer exists, while the section number is retained with a retirement note so existing cross-references stay valid and no section is renumbered; `BossCardCast` (§3.2.30) is the sole Boss cast event and its schema is unchanged; §3.2.25, §3.2.29, §4.4 and §8 item 10 are reconciled with the removal, and the breaking-deploy active-battle drain prerequisite is recorded as a required but unexecuted operational step). Prior 2.29: (§3.2.18 annotated with Slice 5 removal expectations, §3.2.30 item 8 gate terminology reconciled to the Slice 5 removal gate per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; wire contracts and schemas unchanged). Prior 2.28: (§3.2.2, **§3.2.30 added**, and §4.4 extended per **ADR-029 /
+**Version:** 2.31 (§3 item 5 and **§3.3 added** per **TASK-321**: the `ReceiveEvents` envelope gains an optional `combatTrace` member carrying the authoritative per-move combat telemetry of a committed Swap — move identity, ordered actor cycles with matched-Gem counts and cascade depths, every damage instance with its target, the base and effective DEF actually used, shield absorption, actual HP loss, healing, and Pet/Boss before/after snapshots. It is additive and backward-compatible: the member is omitted (`WhenWritingNull`) for `CardCast`, `PetSkillCast`, and replays, it introduces no Battle Event, hub method, argument, subscription, or state member, the §3.2.2 discriminator set and every existing event schema are unchanged, and no gameplay value or formula changes. §3, §3.1, §3.2's envelope description, and the `ReceiveEvents` signature are reconciled to the new optional member). Prior 2.30: (§3.2.2 and §3.2.30 updated and **§3.2.18 RETIRED IN PLACE** per **TASK-313 / ADR-029 Slice 5** (OD-311-2 = A): the `BossSkillCast` discriminator is removed from the closed set and its DTO — including the `skillId` member — no longer exists, while the section number is retained with a retirement note so existing cross-references stay valid and no section is renumbered; `BossCardCast` (§3.2.30) is the sole Boss cast event and its schema is unchanged; §3.2.25, §3.2.29, §4.4 and §8 item 10 are reconciled with the removal, and the breaking-deploy active-battle drain prerequisite is recorded as a required but unexecuted operational step). Prior 2.29: (§3.2.18 annotated with Slice 5 removal expectations, §3.2.30 item 8 gate terminology reconciled to the Slice 5 removal gate per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; wire contracts and schemas unchanged). Prior 2.28: (§3.2.2, **§3.2.30 added**, and §4.4 extended per **ADR-029 /
 TASK-303**, applying the explicit Product Owner decision that the Boss is a
 genuine opponent using the same cast principles as the Player: `BossCardCast`
 becomes the twenty-first member of the closed discriminator set — a dedicated
@@ -429,7 +429,7 @@ Ping(clientSequence?)
 # 3. Server → Client (Event Delivery)
 
 ```text
-ReceiveEvents(battleId, serverSequence, events[], intermediatePetHp?)
+ReceiveEvents(battleId, serverSequence, events[], intermediatePetHp?, combatTrace?)
 ```
 
 1. All events produced by resolving one action (`GAME_EVENTS.md` §1) are
@@ -460,6 +460,25 @@ ReceiveEvents(battleId, serverSequence, events[], intermediatePetHp?)
      the client safely falls back to holding presentation until retaliation/convergence.
    - **Non-persistence:** Carried strictly on the event batch envelope as transient
      resolution metadata. It is never stored in `BattleState`, Redis, or PostgreSQL.
+5. `combatTrace` is an optional structured member of the `ReceiveEvents`
+   payload envelope (§3.3, omitted when `null` via `WhenWritingNull`):
+   - **Meaning:** The authoritative combat telemetry of the committed move —
+     the player's move identity, the ordered actor cycles with their matched-Gem
+     counts and cascade depths, every damage instance individually with its
+     target and the base/effective DEF actually used, shield absorption, actual
+     HP loss, healing, and the Pet/Boss before/after snapshots.
+   - **Lifecycle point:** Captured from the values the resolution already
+     computes while it resolves and committed alongside the same single
+     write-back; it is a report of that resolution, never a second calculation
+     and never a second source of state (`GAME_STATE.md` §5.1,
+     `GAME_EVENTS.md` §3 item 6).
+   - **Optionality:** Present on an accepted `Swap` resolution, including a
+     terminal (lethal) one. Omitted for non-Swap resolutions (`CardCast`,
+     `PetSkillCast`) and for idempotent replays; a rejected action delivers no
+     batch at all (§3.1 item 4).
+   - **Non-persistence:** Envelope metadata only. It is never stored in
+     `BattleState`, Redis, or PostgreSQL, and it is not replayed on reconnect —
+     resynchronization is the §7 state snapshot.
 
 ## 3.1 Delivery on a Board Resolution
 
@@ -472,7 +491,7 @@ half of a Swap's events without the second half on the same call.
 server                                        client
   ├── resolve the Swap  (MATCH3_RULES.md §2–§8)
   ├── write BattleState back under the new Sequence   (GAME_STATE.md §5.1)
-  ├── ReceiveEvents(battleId, newSequence, events[], intermediatePetHp?)  →  §3
+  ├── ReceiveEvents(battleId, newSequence, events[], intermediatePetHp?, combatTrace?)  →  §3
   └── write-back result to the caller                 →  §5
 ```
 
@@ -528,15 +547,16 @@ the single owner: `GAME_EVENTS.md` owns what each event *means* and what each
 payload *contains* (§2) and defers its wire shape here (`GAME_EVENTS.md` §3
 item 1); this section fixes that shape and does not restate §2's semantics.
 
-The envelope of §3 carries four members: `battleId`, `serverSequence`, `events[]`,
-and the optional `intermediatePetHp` (§3 item 4). What follows defines the array's items.
+The envelope of §3 carries five members: `battleId`, `serverSequence`, `events[]`,
+the optional `intermediatePetHp` (§3 item 4), and the optional `combatTrace`
+(§3 item 5, §3.3). What follows defines the array's items.
 
 ### 3.2.1 The Serialization Boundary
 
 ```text
 BattleEvent                    Domain (GameServer.Domain.Match3)
         ↓  transport projection       Application / API — a pure field mapping
-ReceiveEvents payload          { battleId, serverSequence, events[], intermediatePetHp? }
+ReceiveEvents payload          { battleId, serverSequence, events[], intermediatePetHp?, combatTrace? }
         ↓  SignalR JSON
 Frontend                       opaque (ARCHITECTURE.md §2.2.1 rule 4)
 ```
@@ -867,12 +887,13 @@ under ADR-028.
    their order: the array remains the resolution's own order
    (`GAME_RULES.md` §17, `GAME_EVENTS.md` §1.1, §1.3).
 5. **The envelope shape is owned by §3.** `ReceiveEvents(battleId, serverSequence,
-   events[], intermediatePetHp?)` carries the core members (`battleId`, `serverSequence`,
-   `events[]`) and the optional `intermediatePetHp` (§3 item 4). The optional field conveys
-   transient intermediate presentation metadata for the player's board cycle; it is omitted
-   when absent or non-applicable, preserving backward compatibility. It is never part of
-   persistent battle state (`BattleState`, Redis, PostgreSQL) and does not alter settled
-   authoritative battle state.
+   events[], intermediatePetHp?, combatTrace?)` carries the core members
+   (`battleId`, `serverSequence`, `events[]`) and the two optional members
+   `intermediatePetHp` (§3 item 4) and `combatTrace` (§3 item 5, §3.3). The
+   optional fields convey transient presentation metadata for the committed
+   move; each is omitted when absent or non-applicable, preserving backward
+   compatibility. Neither is part of persistent battle state (`BattleState`,
+   Redis, PostgreSQL) and neither alters settled authoritative battle state.
 
 ### 3.2.13 `DamageCalculated`
 
@@ -1808,6 +1829,202 @@ Each `gems` entry:
    in §3.2.2's set; a consumer built before it ignores the item (§3.2.2 item 6)
    — not a desync and not evidence about the resolution. **No version
    negotiation exists**, and none is introduced.
+
+---
+
+## 3.3 The optional `combatTrace` Payload
+
+**This section owns the exact wire schema of `ReceiveEvents.combatTrace`.**
+`GAME_EVENTS.md` owns what each Battle Event means; the trace is not an event
+and does not belong to that document. The trace is the authoritative report of
+the combat values the resolution already computed — it introduces no gameplay
+rule, no calculation, and no state.
+
+```text
+Domain resolution values
+        ↓  transport projection (a pure field mapping)
+ReceiveEvents payload   { battleId, serverSequence, events[], intermediatePetHp?, combatTrace? }
+        ↓  SignalR JSON (camelCase, nulls omitted)
+Frontend                Developer Move Log
+```
+
+```json
+{
+    "battleId": "battle-321",
+    "serverSequence": 42,
+    "move": { "kind": "swap", "fromCell": 27, "toCell": 28 },
+    "cycles": [
+        {
+            "ordinal": 1,
+            "actor": "player",
+            "action": "board",
+            "fromCell": 27,
+            "toCell": 28,
+            "cardId": null,
+            "matchedGems": [ { "gemType": "ATK", "count": 6 }, { "gemType": "DEF", "count": 3 } ],
+            "cascades": [ { "depth": 1 }, { "depth": 2 } ]
+        },
+        {
+            "ordinal": 2,
+            "actor": "boss",
+            "action": "board",
+            "fromCell": 40,
+            "toCell": 41,
+            "cardId": null,
+            "matchedGems": [ { "gemType": "HP", "count": 3 } ],
+            "cascades": [ { "depth": 1 } ]
+        }
+    ],
+    "damage": [
+        {
+            "ordinal": 1,
+            "phase": "attack",
+            "cycleOrdinal": 1,
+            "source": "player",
+            "target": "boss",
+            "base": 30,
+            "comboModifier": 1.0,
+            "elementModifier": 1.0,
+            "otherModifiers": 1.0,
+            "mitigatedDamage": 20.0,
+            "finalDamage": 20,
+            "defenderDefBase": 50,
+            "defenderDefEffective": 50,
+            "shieldAbsorbed": 0,
+            "hpBefore": 900,
+            "hpAfter": 880,
+            "hpLoss": 20
+        }
+    ],
+    "healing": [
+        { "ordinal": 1, "cycleOrdinal": 1, "target": "player", "amount": 0, "rawAmount": 15, "hpBefore": 100, "hpAfter": 100 }
+    ],
+    "pet": { "hpBefore": 100, "hpAfter": 80, "defBase": 25, "powerBefore": 40, "powerAfter": 46 },
+    "boss": { "hpBefore": 900, "hpAfter": 880, "defBase": 50, "powerBefore": 3, "powerAfter": 3 }
+}
+```
+
+### 3.3.1 Members
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `battleId` | string | always | the same battle id the envelope carries |
+| `serverSequence` | int | always | the same `BattleState.Sequence` the envelope carries (§3 item 2) |
+| `move` | object | always | the committed player move (§3.3.2) |
+| `cycles` | object[] | always | the round's actor cycles in resolution order; may be empty only if no cycle was recorded (never for an accepted Swap) |
+| `damage` | object[] | always | every damage instance of the round, in event order; an empty array means no instance priced |
+| `healing` | object[] | always | every heal the round applied (including a heal that restored 0 at full HP) |
+| `pet` | object | always | the Pet's before/after snapshot (§3.3.1) |
+| `boss` | object | always | the Boss's before/after snapshot (§3.3.1) |
+
+**Move object (`move`)**
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | always | `"swap"` — the only move kind that carries a trace |
+| `fromCell` | int | always | the committed Swap's first cell (§1.0 index) |
+| `toCell` | int | always | the committed Swap's second cell |
+
+**Cycle object (`cycles[]`)**
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `ordinal` | int | always | 1-based order of this cycle within the batch |
+| `actor` | string | always | `"player"` or `"boss"` — the side that owns the cycle |
+| `action` | string | always | `"board"` (a Swap) or `"card"` (a Boss Card cast). The current resolution records no cycle with neither action, so `"none"` is reserved rather than emitted |
+| `fromCell` / `toCell` | int | omitted unless `action = "board"` | that board action's two cells |
+| `cardId` | string | omitted unless `action = "card"` | the cast Card's definition identity |
+| `matchedGems` | object[] | always (may be `[]`) | that cycle's `MatchedGemSummary` counts, one entry per Gem type: `gemType` (`"ATK"`, `"DEF"`, `"HP"`, `"POWER"`) and `count` |
+| `cascades` | object[] | always (may be `[]`) | one entry per detection pass of that cycle, in depth order: `depth` (1-based pass depth within this cycle) |
+
+**Damage object (`damage[]`)**
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `ordinal` | int | always | 1-based order within the batch, after all cycles' state changes have been applied and in event order |
+| `phase` | string | always | `"attack"` (the actor's ATK-gated §18d/step-15 attack) or `"statusTick"` (a step-19a damage-over-time tick) |
+| `cycleOrdinal` | int | omitted for a `statusTick` | the `cycles[].ordinal` whose action produced this instance |
+| `source` / `target` | string | always | `"player"` or `"boss"` — the delivering and receiving party (§3.2.14 item 1 vocabulary) |
+| `base` | int | always | step 1 `Base` of the pipeline (ATK + damage pool) |
+| `comboModifier` | number | always | step 2 factor applied |
+| `elementModifier` | number | always | step 3 factor applied |
+| `otherModifiers` | number | always | step 4 factor applied |
+| `mitigatedDamage` | number | always | step 5 result: **post-DEF, pre-truncation damage** — `DamageCalculation.Defense`, never a DEF stat |
+| `finalDamage` | int | always | step 6 `FinalDamage` (truncated, never negative) |
+| `defenderDefBase` | int | always | the defender's **stored base DEF** (`PetState.DEF` / `BossState.DEF`) at this instance's step 5; an explicit `0` is a real zero DEF |
+| `defenderDefEffective` | int | always | the **effective DEF actually used** at step 5 (base plus active `TargetStat = "DEF"` modifiers) |
+| `shieldAbsorbed` | int | always | the part of `finalDamage` the defender's Shield pool absorbed; never also HP loss |
+| `hpBefore` / `hpAfter` | int | always | the target's HP immediately before/after this instance |
+| `hpLoss` | int | always | `hpBefore - hpAfter` — the actual HP lost; `0` when a Shield absorbed everything |
+
+**Heal object (`healing[]`)**
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `ordinal` | int | always | 1-based order within the batch |
+| `cycleOrdinal` | int | always | the cycle whose action produced the heal |
+| `target` | string | always | `"player"` or `"boss"` |
+| `amount` | int | always | HP actually restored after modifiers and the MaxHP clamp; `0` at full HP |
+| `rawAmount` | int | always | the raw Heal Pool the heal was resolved from |
+| `hpBefore` / `hpAfter` | int | always | the target's HP immediately before/after the heal |
+
+**Target snapshot object (`pet`, `boss`)**
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `hpBefore` / `hpAfter` | int | always | HP before the move and after the committed write-back |
+| `defBase` | int | always | the stored base DEF (the stat is never rewritten by a buff, `COMBAT_RULES.md` §5.4.4) |
+| `powerBefore` / `powerAfter` | int | always | Power before the move and after the committed write-back |
+
+### 3.3.2 Rules
+
+1. **It is envelope metadata, not an event.** The trace adds no item to
+   §3.2.2's closed discriminator set, no hub method, no argument, and no
+   subscription. The `events[]` array keeps exactly the items and order
+   `GAME_RULES.md` §17 / `GAME_EVENTS.md` §1 fix.
+2. **Correlation is structural, never positional.** `combatTrace.battleId`
+   and `combatTrace.serverSequence` repeat the envelope's values; a consumer
+   **must** treat a trace whose two values differ from the envelope's as
+   absent for that delivery — never as a row of the current move. Cycles are
+   identified by `ordinal` + `actor`; a consumer must not infer an actor from
+   a cycle's position in the array, from a `MatchedGemSummary` index, or from
+   an event's order.
+3. **Every damage instance is individual.** Two instances in one round (the
+   player's and the Boss's, or a step-19a DoT tick) are separate entries with
+   their own `ordinal`, `target`, `defenderDefBase`, `defenderDefEffective`,
+   `shieldAbsorbed`, and HP pair. They are never collapsed, summed into one
+   synthetic record, or re-correlated by array position.
+4. **DEF is reported, never reconstructed.** `defenderDefBase` and
+   `defenderDefEffective` are the values the pipeline actually read at step 5;
+   `mitigatedDamage` is the step-5 damage result. A client must not invert
+   `mitigatedDamage` to a DEF stat and must not predict a DEF buff from
+   matched-Gem counts: `DamageCalculated.defense` is damage, not DEF
+   (§3.2.13).
+5. **Shield absorption is not HP loss.** `shieldAbsorbed` is the part of
+   `finalDamage` the Shield consumed; `hpLoss` is what actually reduced HP
+   (`hpBefore - hpAfter`). A Shield that absorbed everything yields
+   `hpLoss = 0` with a positive `shieldAbsorbed` (`COMBAT_RULES.md` §4 items
+   4–5).
+6. **Healing is reported even when it restores 0.** A heal at full HP carries
+   `rawAmount > 0` and `amount = 0`; a client must not present that as a
+   positive HP delta.
+7. **A real zero is `0`, an unknown value is omitted.** Every member above is
+   captured from authoritative values, so a `0` DEF or a `0` heal is a real
+   value, never a stand-in for "unknown". No member of this payload is
+   optional except `fromCell`/`toCell` on a board cycle, `cardId` on a card
+   cycle, and `cycleOrdinal` on a status tick — all of which are
+   *not-applicable* omissions per §3.2.5. A consumer renders an unavailable
+   value as its established unknown representation (`?`) and must not
+   substitute a default, a state-push value, or a reconstructed number.
+8. **No second calculation and no logging mutation.** The values are read
+   from the resolution as it produces them; capturing the trace re-runs no
+   damage step, changes no combat value, writes no state, and draws no RNG.
+9. **Non-persistence.** The trace is envelope metadata only. It is not stored
+   in `BattleState`, Redis, or PostgreSQL, and it is not replayed by a
+   reconnect — the §7 snapshot is the recovery path.
+10. **Compatibility is the tolerant-reader rule and nothing else.** An older
+    server simply never sends the member; an older client ignores it. **No
+    version negotiation exists**, and none is introduced.
 
 ---
 
@@ -3031,6 +3248,12 @@ is the answer to the gap it opened.
    projections: `bossState` is the four-member projection §4.4 item 2 fixes,
    not `BossState`, and the Pet-side projection gains the enumerated members
    §4.3 items 14 and 15 author rather than becoming `PetState` (`§4.3` item 2).
+   **The `combatTrace` envelope member is not a message on this list either:**
+   it is per-delivery metadata carried on the existing `ReceiveEvents` call
+   (§3 item 5, §3.3), it introduces no method, argument, subscription, or
+   state-push member, and it is not persisted or replayed — it reports the
+   combat values the resolution already computed, so it creates no
+   combat-stat message and no second combat delivery path.
 10. **Wire protocol version negotiation.** Per `ADR-028`, no wire protocol version
     negotiation exists. Server and client are deployed together following the
     Decision B-2 active battle drain deployment policy.

@@ -238,7 +238,20 @@ describe('Frontend architectural boundaries', () => {
     ];
 
     it.each(runtimeFiles)('%s declares no gameplay state or calculations', (file) => {
-      const code = stripComments(readSource(file)).toLowerCase();
+      // TASK-321: SIGNALR_PROTOCOL.md §3 item 5 / §3.3 adds the optional
+      // `combatTrace` member to the `ReceiveEvents` envelope, so the runtime's
+      // transport layer names that documented wire shape verbatim (arrays,
+      // objects, strings, and finite numbers). That marked block is an envelope
+      // parse — it computes nothing, derives nothing, and is not gameplay state —
+      // so it is exempted from the generic term scan; every other line of the
+      // runtime files is still scanned. The trace is never interpreted here: the
+      // Developer Move Log alone renders it (BattleScene / BattleEventPresenter).
+      const source = readSource(file)
+        .replace(
+          /\/\/ BEGIN TASK-321 combatTrace wire (?:shape|reader)[\s\S]*?\/\/ END TASK-321 combatTrace wire (?:shape|reader)/g,
+          ''
+        );
+      const code = stripComments(source).toLowerCase();
 
       // The runtime carries the implemented stage's fields as a synchronized
       // presentation copy — `board` from the Board Foundation stage

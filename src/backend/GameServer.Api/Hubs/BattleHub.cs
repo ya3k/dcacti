@@ -653,11 +653,13 @@ public record GetBattleStateResponse(
 /// The <c>ReceiveEvents</c> delivery payload
 /// (<c>SIGNALR_PROTOCOL.md</c> §3).
 ///
-/// It carries exactly the three documented members and nothing else:
-/// <c>battleId</c>, <c>serverSequence</c>, and <c>events[]</c>. It carries no
-/// state (<c>§3.1</c> item 3, <c>§4</c> item 6), no <c>Status</c>/lifecycle value
-/// (<c>§8.3</c>), no board snapshot, no Combo or Match-count duplication, no
-/// <c>clientSequence</c>, and no event-specific transport message.
+/// It carries exactly the documented members and nothing else: the core
+/// <c>battleId</c>, <c>serverSequence</c>, and <c>events[]</c>, plus the two
+/// optional members <c>intermediatePetHp</c> (§3 item 4) and <c>combatTrace</c>
+/// (§3 item 5, §3.3). It carries no state (<c>§3.1</c> item 3, <c>§4</c> item 6),
+/// no <c>Status</c>/lifecycle value (<c>§8.3</c>), no board snapshot, no Combo or
+/// Match-count duplication, no <c>clientSequence</c>, and no event-specific
+/// transport message.
 ///
 /// <c>events</c> is the ordered Battle Event list the resolution already produced
 /// — <c>SwapExecutionResult.Events</c> — projected one-to-one onto the §3.2 wire
@@ -698,11 +700,22 @@ public record GetBattleStateResponse(
 /// message level, so no client ever receives part of a resolution's events
 /// (<c>§3.1</c> item 1).
 /// </param>
+/// <param name="IntermediatePetHp">
+/// The authoritative Pet HP after player-cycle healing and before Boss
+/// retaliation (<c>§3</c> item 4), or <c>null</c> when the resolution has no
+/// intermediate player board cycle.
+/// </param>
+/// <param name="CombatTrace">
+/// The authoritative combat trace of a committed Swap (<c>§3</c> item 5, §3.3),
+/// or <c>null</c> for a resolution that carries no trace. It is delivery
+/// metadata only and is not persisted.
+/// </param>
 public record ReceiveEventsPayload(
     [property: JsonPropertyName("battleId")] string BattleId,
     [property: JsonPropertyName("serverSequence")] int ServerSequence,
     [property: JsonPropertyName("events")] IReadOnlyList<BattleEventWireDto> Events,
-    [property: JsonPropertyName("intermediatePetHp")] [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? IntermediatePetHp = null);
+    [property: JsonPropertyName("intermediatePetHp")] [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? IntermediatePetHp = null,
+    [property: JsonPropertyName("combatTrace")] [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CombatTraceWireDto? CombatTrace = null);
 
 /// <summary>
 /// Thin realtime communication boundary (SIGNALR_PROTOCOL.md, ARCHITECTURE.md §1/§2.1).
@@ -1344,9 +1357,10 @@ public class BattleHub : Hub
     /// Projects the committed Swap result onto the §3 <c>ReceiveEvents</c> payload.
     ///
     /// A pure field mapping, exactly like <see cref="ToPayload(BattleState)"/>: the
-    /// battle id, the post-resolution <c>BattleState.Sequence</c>, and the
-    /// executor's own event list are carried across one-to-one and in order. The
-    /// hub derives nothing, counts nothing, re-detects nothing, and adds no member
+    /// battle id, the post-resolution <c>BattleState.Sequence</c>, the executor's
+    /// own event list, the intermediate Pet HP, and the resolution's combat trace
+    /// are carried across one-to-one and in order. The hub derives nothing, counts
+    /// nothing, re-detects nothing, computes no combat value, and adds no member
     /// (<c>SIGNALR_PROTOCOL.md</c> §3, §3.2, §3.3).
     ///
     /// The event list is projected onto the §3.2 wire schema rather than passed
@@ -1378,7 +1392,15 @@ public class BattleHub : Hub
             BattleEventWireProjection.Project(result.Events),
 
             // Authoritative Pet HP after player-cycle healing and before Boss retaliation.
-            result.IntermediatePetHp);
+            result.IntermediatePetHp,
+
+            // SIGNALR_PROTOCOL.md §3 item 5 / §3.3: the authoritative combat trace
+            // of this committed Swap, projected onto its own wire DTO (Domain values
+            // are never serialized). It is omitted for a resolution that carries no
+            // trace, and it is a pure field mapping — nothing is derived here.
+            result.CombatTrace is { } combatTrace
+                ? CombatTraceWireProjection.Project(combatTrace)
+                : null);
 
     /// <summary>
     /// Projects the domain state onto the §4 wire payload.

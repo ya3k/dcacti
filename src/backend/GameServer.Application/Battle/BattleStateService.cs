@@ -1521,6 +1521,44 @@ public sealed class BattleStateService
             return new SwapResolution(result, ActivatedOncePerBattleBossPassive: null);
         }
 
+        // ===================================================================
+        // TASK-321 / SIGNALR_PROTOCOL.md §3 item 5, §3.3: combat trace collectors
+        // ===================================================================
+        // The trace is the authoritative report of this round, captured from the
+        // values each stage already computes at the point it computes them. These
+        // collectors only record; they run no calculation, change no combat value,
+        // draw no RNG, and write no state. The ordinal counters are the trace's own
+        // batch order (cycles, damage instances, heals respectively).
+        var traceCycles = new List<CombatTraceCycle>(2);
+        var traceDamage = new List<CombatTraceDamage>(4);
+        var traceHeals = new List<CombatTraceHeal>(2);
+        var traceDamageOrdinal = 0;
+        var traceHealOrdinal = 0;
+
+        // The player's board cycle is the committed Swap itself. Its cleared-Gem
+        // counts are the cycle's own MatchedGemSummary accounting and its passes are
+        // the cascade loop's own pass list — neither is re-counted here. Depth is
+        // the pass's 1-based position in that list (MATCH3_RULES.md §4.2: depth 1 is
+        // the pass run on the committed Swap's board), which is the same identity
+        // SIGNALR_PROTOCOL.md §3.2.28 delivers as passDepth.
+        traceCycles.Add(new CombatTraceCycle(
+            Ordinal: 1,
+            Actor: DamageParty.Player,
+            Action: CombatTraceCycleAction.Board,
+            FromCell: request.From,
+            ToCell: request.To,
+            CardId: null,
+            MatchedGems: ToTraceGemCounts(result.Resources.ClearedGemCounts),
+            Cascades: ToTraceCascades(result.Resolution)));
+
+        // The Pet heal step 14 applied (COMBAT_RULES.md §4 item 7). The executor
+        // captured the authoritative record; this stage assigns the round's heal
+        // ordinal and the owning cycle.
+        if (result.PetHeal is { } petHeal)
+        {
+            traceHeals.Add(petHeal with { Ordinal = ++traceHealOrdinal, CycleOrdinal = 1 });
+        }
+
         // BOSS_RULES.md §6.2.4: the once-per-battle Boss Passive firing this
         // resolution activated, if any. It is reported to the caller rather than
         // consumed here, so the eligibility is spent only when this resolution is
@@ -1773,6 +1811,7 @@ public sealed class BattleStateService
         // NextAttack modifiers are preserved unconsumed — the consumption
         // boundary is the qualifying attack, not the Turn (ADR-026 D1,
         // COMBAT_RULES.md §3.3 item 8).
+        var bossHpBeforePlayerAttack = bossState.HP;
         var playerAttack = AttackResolution.ResolveAndApplyPlayerAttack(
             resolved.PetState,
             bossState,
@@ -1800,6 +1839,32 @@ public sealed class BattleStateService
         // DamageTaken. They are the resolution's own values, appended unchanged, and
         // the list is empty for a non-qualifying attack (ADR-026 D1).
         events.AddRange(playerAttack.Result.Events);
+
+        // TASK-321 / SIGNALR_PROTOCOL.md §3.3: record the player's damage instance
+        // individually, from the AttackResolution result itself — its breakdown,
+        // shield absorption, target HP, and the base/effective DEF step 5 read. A
+        // non-qualifying attack priced no instance, so it records none (ADR-026 D1).
+        if (playerAttack.Result is { IsQualifyingAttack: true, DamageResult: { } playerDamage })
+        {
+            traceDamage.Add(new CombatTraceDamage(
+                Ordinal: ++traceDamageOrdinal,
+                Phase: CombatTraceDamagePhase.Attack,
+                CycleOrdinal: 1,
+                Source: playerDamage.DamageDealt.Source,
+                Target: playerDamage.DamageDealt.Target,
+                Base: playerDamage.Calculation.Base,
+                ComboModifier: playerDamage.Calculation.ComboModifier,
+                ElementModifier: playerDamage.Calculation.ElementModifier,
+                OtherModifiers: playerDamage.Calculation.OtherModifiers,
+                MitigatedDamage: playerDamage.Calculation.Defense,
+                FinalDamage: playerDamage.Calculation.FinalDamage,
+                DefenderDefenseBase: playerAttack.Result.DefenderDefenseBase,
+                DefenderDefenseEffective: playerAttack.Result.DefenderDefenseEffective,
+                ShieldAbsorbed: playerDamage.AbsorbedDamage,
+                HpBefore: bossHpBeforePlayerAttack,
+                HpAfter: playerDamage.TargetHp,
+                HpLoss: bossHpBeforePlayerAttack - playerDamage.TargetHp));
+        }
 
         // ===================================================================
         // Step 7: Enrage (BOSS_RULES.md §5 item 4, §6.1)
@@ -1866,11 +1931,25 @@ public sealed class BattleStateService
             //
             // No Boss Passive ran on this path (§5 item 4: no Boss Response), so no
             // once-per-battle firing was activated and none is reported.
+            //
+            // TASK-321: a lethal round is still a resolved round, so it carries the
+            // same combat trace every other committed Swap carries — the player cycle,
+            // the player's damage instance, the Pet heal, and both before/after
+            // snapshots. Only the Boss-response cycles are absent because none ran.
+            var terminalState = StatusEffectLifecycle.ConsumeAtStep19a(
+                resolved with { BossState = bossState });
             return new SwapResolution(
                 result
                     .WithEvents(events)
-                    .WithState(StatusEffectLifecycle.ConsumeAtStep19a(
-                        resolved with { BossState = bossState })),
+                    .WithState(terminalState)
+                    .WithCombatTrace(BuildCombatTrace(
+                        state,
+                        terminalState,
+                        request,
+                        traceCycles,
+                        traceDamage,
+                        traceHeals,
+                        terminalState.Sequence)),
                 ActivatedOncePerBattleBossPassive: null);
         }
 
@@ -2030,6 +2109,20 @@ public sealed class BattleStateService
             // the Boss cycle emits no Boss summary.
             events.Add(BattleEvent.ForMatchedGemSummary(bossGeneration.ClearedGemCounts));
 
+            // TASK-321 / SIGNALR_PROTOCOL.md §3.3: the Boss's own board cycle. Its
+            // actor is the Boss's — never inferred from the cycle's position — and its
+            // passes are the Boss resolution's own pass list. The player cycle was
+            // recorded above; this is a separate entry, not a replacement.
+            traceCycles.Add(new CombatTraceCycle(
+                Ordinal: traceCycles.Count + 1,
+                Actor: DamageParty.Boss,
+                Action: CombatTraceCycleAction.Board,
+                FromCell: bossMove.SelectedMove.From,
+                ToCell: bossMove.SelectedMove.To,
+                CardId: null,
+                MatchedGems: ToTraceGemCounts(bossGeneration.ClearedGemCounts),
+                Cascades: ToTraceCascades(bossResolution)));
+
             // ADR-026 §4: cell type determines the effect and the acting side determines
             // ownership and target — for the Boss's DEF Gems the temporary DEF buff is the
             // Boss's (COMBAT_RULES.md §5.5.6, TASK-299), for its HP Gems the heal is the
@@ -2040,12 +2133,29 @@ public sealed class BattleStateService
             // call takes no charge-requirement argument. ResourceGenerator owns every one
             // of those rules; this boundary only orders the call and writes back what it
             // returned.
+            var bossHpBeforeBossHeal = bossState.HP;
             var bossMatchEffects = ResourceGenerator.ApplyActorMatchEffects(
                 DamageParty.Boss,
                 resolved.PetState,
                 bossState,
                 bossGeneration,
                 bossResolution);
+
+            // TASK-321 / SIGNALR_PROTOCOL.md §3.3: the Boss's HP-Gem heal is the
+            // Boss cycle's heal. ApplyActorMatchEffects touches Boss HP only through
+            // the heal, so the post-call HP difference is exactly the amount restored;
+            // nothing else is inferred from it.
+            if (bossGeneration.HealPool > 0)
+            {
+                traceHeals.Add(new CombatTraceHeal(
+                    Ordinal: ++traceHealOrdinal,
+                    CycleOrdinal: traceCycles.Count,
+                    Target: DamageParty.Boss,
+                    Amount: bossMatchEffects.Boss.HP - bossHpBeforeBossHeal,
+                    RawAmount: bossGeneration.HealPool,
+                    HpBefore: bossHpBeforeBossHeal,
+                    HpAfter: bossMatchEffects.Boss.HP));
+            }
 
             resolved = resolved with
             {
@@ -2341,6 +2451,21 @@ public sealed class BattleStateService
             resolved = cast.State with { BossState = castBossState };
             bossState = castBossState;
 
+            // TASK-321 / SIGNALR_PROTOCOL.md §3.3: a cast-selected response phase is
+            // the Boss's cycle with a card action — no board swap, no matched-Gem
+            // summary, and no cascade passes, because none ran (BOSS_RULES.md §4.3
+            // item 4). The cycle is still recorded so the consumer can attribute the
+            // Boss's action without inferring it from event order.
+            traceCycles.Add(new CombatTraceCycle(
+                Ordinal: traceCycles.Count + 1,
+                Actor: DamageParty.Boss,
+                Action: CombatTraceCycleAction.Card,
+                FromCell: null,
+                ToCell: null,
+                CardId: bossCard!.CardDefinitionId,
+                MatchedGems: [],
+                Cascades: []));
+
             // TASK-309 W5 / D-1 / GAME_EVENTS.md §2 (as amended by TASK-309):
             // carry the cast's own authoritative effect reports into the round's
             // SINGLE ordered batch, BEFORE the BossCardCast item. The Boss branch of
@@ -2405,6 +2530,7 @@ public sealed class BattleStateService
         // values it reads are the board branch's own (assigned above).
         if (bossBoardActionSelected)
         {
+            var petHpBeforeBossAttack = resolved.PetState.HP;
             var bossAttack = AttackResolution.ResolveAndApplyBossAttack(
                 bossState,
                 resolved.PetState,
@@ -2424,6 +2550,31 @@ public sealed class BattleStateService
             };
 
             events.AddRange(bossAttack.Result.Events);
+
+            // TASK-321 / SIGNALR_PROTOCOL.md §3.3: the Boss's damage instance is a
+            // separate, individually correlated record — its own target, DEF stats,
+            // shield absorption, and HP pair — never merged with the player's.
+            if (bossAttack.Result is { IsQualifyingAttack: true, DamageResult: { } bossDamage })
+            {
+                traceDamage.Add(new CombatTraceDamage(
+                    Ordinal: ++traceDamageOrdinal,
+                    Phase: CombatTraceDamagePhase.Attack,
+                    CycleOrdinal: traceCycles.Count,
+                    Source: bossDamage.DamageDealt.Source,
+                    Target: bossDamage.DamageDealt.Target,
+                    Base: bossDamage.Calculation.Base,
+                    ComboModifier: bossDamage.Calculation.ComboModifier,
+                    ElementModifier: bossDamage.Calculation.ElementModifier,
+                    OtherModifiers: bossDamage.Calculation.OtherModifiers,
+                    MitigatedDamage: bossDamage.Calculation.Defense,
+                    FinalDamage: bossDamage.Calculation.FinalDamage,
+                    DefenderDefenseBase: bossAttack.Result.DefenderDefenseBase,
+                    DefenderDefenseEffective: bossAttack.Result.DefenderDefenseEffective,
+                    ShieldAbsorbed: bossDamage.AbsorbedDamage,
+                    HpBefore: petHpBeforeBossAttack,
+                    HpAfter: bossDamage.TargetHp,
+                    HpLoss: petHpBeforeBossAttack - bossDamage.TargetHp));
+            }
 
             // RELIC_RULES.md §3: OnDamageTaken "fires when the active Pet takes
             // damage". The instance above is the round's Boss→Pet damage instance and the
@@ -2512,6 +2663,15 @@ public sealed class BattleStateService
                     break;
                 }
 
+                var dotDefenderDefBase = bossState.DEF;
+                // COMBAT_RULES.md §3.2 / §5.5.6 (TASK-299): step 5 reads the
+                // defender's EFFECTIVE DEF, so an active Boss DEF-Gem buff prices
+                // this tick too. The stored BossState.DEF is never written. The value
+                // is computed once and echoed into the trace below.
+                var dotDefenderDefEffective = StatusEffectLifecycle.EffectiveBossDefense(
+                    bossState.DEF,
+                    bossState.ActiveStatusEffects);
+                var dotHpBefore = bossState.HP;
                 var dotDamage = DamagePipeline.Calculate(
                     new DamagePipeline.DamageInputs(
                         Attack: (int)dot.Magnitude,
@@ -2519,13 +2679,7 @@ public sealed class BattleStateService
                         Combo: 1,
                         AttackerElement: Element.Hoa,
                         DefenderElement: bossState.Element,
-                        // COMBAT_RULES.md §3.2 / §5.5.6 (TASK-299): step 5 reads the
-                        // defender's EFFECTIVE DEF, so an active Boss DEF-Gem buff
-                        // prices this tick too. The stored BossState.DEF is never
-                        // written.
-                        DefenderDefense: StatusEffectLifecycle.EffectiveBossDefense(
-                            bossState.DEF,
-                            bossState.ActiveStatusEffects),
+                        DefenderDefense: dotDefenderDefEffective,
                         DefenderHp: bossState.HP,
                         Source: DamageParty.Player,
                         Target: DamageParty.Boss,
@@ -2560,6 +2714,28 @@ public sealed class BattleStateService
                 events.Add(BattleEvent.ForDamageDealt(dotDamage.DamageDealt));
                 events.Add(BattleEvent.ForDamageTaken(dotDamage.DamageTaken));
 
+                // TASK-321 / SIGNALR_PROTOCOL.md §3.3: a step-19a tick is its own
+                // damage instance with no owning actor cycle (`cycleOrdinal` absent) —
+                // it is never folded into the player's or the Boss's attack record.
+                traceDamage.Add(new CombatTraceDamage(
+                    Ordinal: ++traceDamageOrdinal,
+                    Phase: CombatTraceDamagePhase.StatusTick,
+                    CycleOrdinal: null,
+                    Source: dotDamage.DamageDealt.Source,
+                    Target: dotDamage.DamageDealt.Target,
+                    Base: dotDamage.Calculation.Base,
+                    ComboModifier: dotDamage.Calculation.ComboModifier,
+                    ElementModifier: dotDamage.Calculation.ElementModifier,
+                    OtherModifiers: dotDamage.Calculation.OtherModifiers,
+                    MitigatedDamage: dotDamage.Calculation.Defense,
+                    FinalDamage: dotDamage.Calculation.FinalDamage,
+                    DefenderDefenseBase: dotDefenderDefBase,
+                    DefenderDefenseEffective: dotDefenderDefEffective,
+                    ShieldAbsorbed: dotDamage.AbsorbedDamage,
+                    HpBefore: dotHpBefore,
+                    HpAfter: dotDamage.TargetHp,
+                    HpLoss: dotHpBefore - dotDamage.TargetHp));
+
                 if (bossState.HP == 0)
                 {
                     events.Add(BattleEvent.ForBattleWon(bossState.HP, resolved.PetState.HP));
@@ -2582,6 +2758,15 @@ public sealed class BattleStateService
                     break;
                 }
 
+                var dotDefenderDefBase = resolved.PetState.DEF;
+                // COMBAT_RULES.md §3.2 / §5.4.6 (TASK-299): step 5 reads the
+                // defender's EFFECTIVE DEF, so the Pet's active DEF-Gem buff prices
+                // this tick too. The stored PetState.DEF is never written. The value
+                // is computed once and echoed into the trace below.
+                var dotDefenderDefEffective = StatusEffectLifecycle.EffectivePetDefense(
+                    resolved.PetState.DEF,
+                    resolved.PetState.ActiveStatusEffects);
+                var dotHpBefore = resolved.PetState.HP;
                 var dotDamage = DamagePipeline.Calculate(
                     new DamagePipeline.DamageInputs(
                         Attack: (int)dot.Magnitude,
@@ -2589,13 +2774,7 @@ public sealed class BattleStateService
                         Combo: 1,
                         AttackerElement: Element.Hoa,
                         DefenderElement: resolved.PetState.Element,
-                        // COMBAT_RULES.md §3.2 / §5.4.6 (TASK-299): step 5 reads the
-                        // defender's EFFECTIVE DEF, so the Pet's active DEF-Gem buff
-                        // prices this tick too. The stored PetState.DEF is never
-                        // written.
-                        DefenderDefense: StatusEffectLifecycle.EffectivePetDefense(
-                            resolved.PetState.DEF,
-                            resolved.PetState.ActiveStatusEffects),
+                        DefenderDefense: dotDefenderDefEffective,
                         DefenderHp: resolved.PetState.HP,
                         Source: DamageParty.Boss,
                         Target: DamageParty.Player,
@@ -2638,6 +2817,28 @@ public sealed class BattleStateService
                 events.Add(BattleEvent.ForDamageCalculated(dotDamage.Calculation));
                 events.Add(BattleEvent.ForDamageDealt(dotDamage.DamageDealt));
                 events.Add(BattleEvent.ForDamageTaken(dotDamage.DamageTaken));
+
+                // TASK-321 / SIGNALR_PROTOCOL.md §3.3: a step-19a tick is its own
+                // damage instance with no owning actor cycle (`cycleOrdinal` absent) —
+                // it is never folded into the player's or the Boss's attack record.
+                traceDamage.Add(new CombatTraceDamage(
+                    Ordinal: ++traceDamageOrdinal,
+                    Phase: CombatTraceDamagePhase.StatusTick,
+                    CycleOrdinal: null,
+                    Source: dotDamage.DamageDealt.Source,
+                    Target: dotDamage.DamageDealt.Target,
+                    Base: dotDamage.Calculation.Base,
+                    ComboModifier: dotDamage.Calculation.ComboModifier,
+                    ElementModifier: dotDamage.Calculation.ElementModifier,
+                    OtherModifiers: dotDamage.Calculation.OtherModifiers,
+                    MitigatedDamage: dotDamage.Calculation.Defense,
+                    FinalDamage: dotDamage.Calculation.FinalDamage,
+                    DefenderDefenseBase: dotDefenderDefBase,
+                    DefenderDefenseEffective: dotDefenderDefEffective,
+                    ShieldAbsorbed: dotDamage.AbsorbedDamage,
+                    HpBefore: dotHpBefore,
+                    HpAfter: dotDamage.TargetHp,
+                    HpLoss: dotHpBefore - dotDamage.TargetHp));
 
                 // RELIC_RULES.md §3: a DoT tick whose target is the Pet is damage
                 // the active Pet took, so it is an OnDamageTaken firing point on the
@@ -2694,6 +2895,23 @@ public sealed class BattleStateService
         resolved = EnsurePlayableBoard(resolved with { BossState = bossState });
 
         // ===================================================================
+        // TASK-321 / SIGNALR_PROTOCOL.md §3 item 5, §3.3: the combat trace
+        // ===================================================================
+        // Assembled from the collectors the stages above filled — no value is
+        // re-derived from the event list, the final board, a Boss id, a Gem count, or
+        // a damage ratio. It is attached to the committed result as delivery metadata;
+        // the transport layer projects it onto the wire schema and it is never
+        // persisted.
+        var combatTrace = BuildCombatTrace(
+            state,
+            resolved,
+            request,
+            traceCycles,
+            traceDamage,
+            traceHeals,
+            resolved.Sequence);
+
+        // ===================================================================
         // The finished post-resolution state — GAME_STATE.md §5.1
         // ===================================================================
         // The caller performs the one write-back, under the Sequence
@@ -2708,9 +2926,86 @@ public sealed class BattleStateService
         return new SwapResolution(
             result
                 .WithEvents(events)
-                .WithState(resolved),
+                .WithState(resolved)
+                .WithCombatTrace(combatTrace),
             activatedOncePerBattleBossPassive);
     }
+    /// <summary>
+    /// Builds the round's authoritative combat trace from the values the stages
+    /// above already recorded (<c>SIGNALR_PROTOCOL.md</c> §3 item 5, §3.3).
+    ///
+    /// <b>A pure assembly, not a computation.</b> It reads the before/after states
+    /// of the single write-back and the collector lists; it derives no gameplay
+    /// value, re-runs no damage step, reads no event list, and infers nothing from
+    /// the final board. The sequence it stamps is the committed
+    /// <c>BattleState.Sequence</c>, so the trace can be correlated with the envelope
+    /// it travels on.
+    /// </summary>
+    private static CombatTrace BuildCombatTrace(
+        BattleState before,
+        BattleState after,
+        SwapRequest request,
+        IReadOnlyList<CombatTraceCycle> cycles,
+        IReadOnlyList<CombatTraceDamage> damage,
+        IReadOnlyList<CombatTraceHeal> healing,
+        int serverSequence) =>
+        new(
+            BattleId: after.BattleId,
+            ServerSequence: serverSequence,
+            Move: new CombatTraceMove(CombatTraceMoveKind.Swap, request.From, request.To),
+            Cycles: cycles,
+            Damage: damage,
+            Healing: healing,
+            Pet: new CombatTraceTarget(
+                HpBefore: before.PetState.HP,
+                HpAfter: after.PetState.HP,
+                DefBase: before.PetState.DEF,
+                PowerBefore: before.PetState.Power,
+                PowerAfter: after.PetState.Power),
+            Boss: new CombatTraceTarget(
+                HpBefore: before.BossState.HP,
+                HpAfter: after.BossState.HP,
+                DefBase: before.BossState.DEF,
+                PowerBefore: before.BossState.Power,
+                PowerAfter: after.BossState.Power));
+
+    /// <summary>
+    /// Projects the round's cleared-Gem counts into the trace's fixed
+    /// ATK, DEF, HP, POWER order (<c>MATCH3_RULES.md</c> §5.8.2). The counts are the
+    /// resource stage's own accounting; nothing is re-counted here.
+    /// </summary>
+    private static IReadOnlyList<CombatTraceGemCount> ToTraceGemCounts(ClearedGemCounts counts) =>
+    [
+        new CombatTraceGemCount(GemType.Atk, counts.Atk),
+        new CombatTraceGemCount(GemType.Def, counts.Def),
+        new CombatTraceGemCount(GemType.Hp, counts.Hp),
+        new CombatTraceGemCount(GemType.Power, counts.Power),
+    ];
+
+    /// <summary>
+    /// Projects a cascade resolution's pass list into the trace's cascade entries
+    /// (<c>MATCH3_RULES.md</c> §4.2, <c>SIGNALR_PROTOCOL.md</c> §3.2.28). A pass's
+    /// depth is its 1-based position in the resolution's own ordered pass list —
+    /// the same identity the wire's <c>passDepth</c> reports — so no pass is
+    /// synthesized, re-sorted, or dropped.
+    /// </summary>
+    private static IReadOnlyList<CombatTraceCascade> ToTraceCascades(
+        CascadeResolver.CascadeResult resolution)
+    {
+        if (resolution.Passes is not { Count: > 0 } passes)
+        {
+            return [];
+        }
+
+        var cascades = new CombatTraceCascade[passes.Count];
+        for (var index = 0; index < passes.Count; index++)
+        {
+            cascades[index] = new CombatTraceCascade(Depth: index + 1);
+        }
+
+        return cascades;
+    }
+
     /// <summary>
     /// Stores a resolved state under the documented <c>Sequence</c>
     /// compare-and-set and reports whether it was applied

@@ -24,6 +24,10 @@ import type { GameRuntimeState } from '../src/state/GameRuntimeState';
 import type {
   BattleEventsEnvelope,
   BattleStateMetadata,
+  CombatTrace,
+  CombatTraceCycle,
+  CombatTraceDamage,
+  CombatTraceHealing,
   RuntimeBattleState,
   RuntimeBoard,
   RuntimeBossState,
@@ -11777,6 +11781,93 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
     harness.emitBattleEvents({ battleId, serverSequence: sequence, events } as BattleEventsEnvelope);
   }
 
+  /** One authoritative combat trace, as the server delivers it (SIGNALR_PROTOCOL.md §3.3). */
+  function combatTrace(overrides: Partial<CombatTrace> = {}): CombatTrace {
+    return {
+      battleId: 'battle-253',
+      serverSequence: 1,
+      move: { kind: 'swap', fromCell: 27, toCell: 28 },
+      cycles: [],
+      damage: [],
+      healing: [],
+      pet: { hpBefore: 1000, hpAfter: 1000, defBase: 12, powerBefore: 40, powerAfter: 46 },
+      boss: { hpBefore: 5000, hpAfter: 5000, defBase: 50, powerBefore: 3, powerAfter: 3 },
+      ...overrides,
+    };
+  }
+
+  /** One cycle in the delivered trace shape. */
+  function traceCycle(overrides: Partial<CombatTraceCycle> = {}): CombatTraceCycle {
+    return {
+      ordinal: 1,
+      actor: 'player',
+      action: 'board',
+      fromCell: 27,
+      toCell: 28,
+      matchedGems: [{ gemType: 'ATK', count: 3 }],
+      cascades: [{ depth: 1 }],
+      ...overrides,
+    };
+  }
+
+  /** One damage instance in the delivered trace shape. */
+  function traceDamage(overrides: Partial<CombatTraceDamage> = {}): CombatTraceDamage {
+    return {
+      ordinal: 1,
+      phase: 'attack',
+      cycleOrdinal: 1,
+      source: 'player',
+      target: 'boss',
+      base: 30,
+      comboModifier: 1,
+      elementModifier: 1,
+      otherModifiers: 1,
+      mitigatedDamage: 30,
+      finalDamage: 30,
+      defenderDefBase: 50,
+      defenderDefEffective: 50,
+      shieldAbsorbed: 0,
+      hpBefore: 5000,
+      hpAfter: 4970,
+      hpLoss: 30,
+      ...overrides,
+    };
+  }
+
+  /** One heal in the delivered trace shape. */
+  function traceHealing(overrides: Partial<CombatTraceHealing> = {}): CombatTraceHealing {
+    return {
+      ordinal: 1,
+      cycleOrdinal: 1,
+      target: 'player',
+      amount: 0,
+      rawAmount: 15,
+      hpBefore: 1000,
+      hpAfter: 1000,
+      ...overrides,
+    };
+  }
+
+  /**
+   * Delivers one traced Swap resolution the way the server does: state push, then
+   * the batch carrying the optional `combatTrace` (SIGNALR_PROTOCOL.md §3 item 5).
+   */
+  function deliverTrace(
+    harness: ReturnType<typeof createSceneHarness>,
+    sequence: number,
+    trace: CombatTrace,
+    events: unknown[] = [],
+    battleId = 'battle-253'
+  ): void {
+    harness.setBattleState(battleState({ battleId, sequence }));
+    harness.emitBattleEvents({
+      battleId,
+      serverSequence: sequence,
+      events,
+      combatTrace: trace,
+    } as BattleEventsEnvelope);
+  }
+
   // ---------------------------------------------------------------------------
   // Placement and DEV gating
   // ---------------------------------------------------------------------------
@@ -12165,6 +12256,353 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
     }
     expect(outside).not.toContain('seq=12');
     expect(outside).not.toContain('Combo: 3');
+  });
+
+  it('renders only the authoritative trace numbers, with no DEF prediction or buff from Gem counts', () => {
+    const { harness, scene } = createBattle();
+
+    deliverTrace(
+      harness,
+      1,
+      combatTrace({
+        serverSequence: 1,
+        cycles: [
+          traceCycle({
+            ordinal: 1,
+            actor: 'player',
+            fromCell: 27,
+            toCell: 28,
+            matchedGems: [
+              { gemType: 'ATK', count: 6 },
+              { gemType: 'DEF', count: 3 },
+            ],
+            cascades: [{ depth: 1 }, { depth: 2 }],
+          }),
+          traceCycle({
+            ordinal: 2,
+            actor: 'boss',
+            fromCell: 40,
+            toCell: 41,
+            matchedGems: [{ gemType: 'HP', count: 3 }],
+            cascades: [{ depth: 1 }],
+          }),
+        ],
+        damage: [
+          traceDamage({
+            ordinal: 1,
+            source: 'player',
+            target: 'boss',
+            mitigatedDamage: 20,
+            finalDamage: 20,
+            defenderDefBase: 50,
+            defenderDefEffective: 66,
+            hpBefore: 5000,
+            hpAfter: 4980,
+            hpLoss: 20,
+          }),
+          traceDamage({
+            ordinal: 2,
+            source: 'boss',
+            target: 'player',
+            mitigatedDamage: 10,
+            finalDamage: 10,
+            defenderDefBase: 12,
+            defenderDefEffective: 12,
+            hpBefore: 1000,
+            hpAfter: 990,
+            hpLoss: 10,
+          }),
+        ],
+        pet: { hpBefore: 1000, hpAfter: 990, defBase: 12, powerBefore: 40, powerAfter: 44 },
+        boss: { hpBefore: 5000, hpAfter: 4980, defBase: 50, powerBefore: 3, powerAfter: 3 },
+      })
+    );
+
+    const rows = scene.getMoveLogRows();
+    const petRow = rows.find((row) => row.includes('[PET]'));
+    const bossRow = rows.find((row) => row.includes('[BOSS]'));
+    expect(petRow).toBeDefined();
+    expect(bossRow).toBeDefined();
+
+    // The Boss DEF is the trace's own base/effective pair, including the effective
+    // value the pipeline actually used (66, not the stored 50).
+    expect(bossRow).toContain('DEF: base 50 eff 66');
+    // ...and not a DEF buff predicted from the matched DEF gems (the removed
+    // client-side prediction rendered `eff 45`) and not a hardcoded Pet DEF.
+    expect(petRow).not.toContain('eff 45');
+    expect(bossRow).not.toContain('eff 45');
+    expect(bossRow).not.toMatch(/base 25\b/);
+    expect(petRow).not.toMatch(/base 25\b/);
+    // The Pet DEF is the trace snapshot's stored value, never a constant.
+    expect(petRow).toContain('DEF: base 12 eff 12');
+
+    const damageRow = rows.find((row) => row.includes('DMG_CALC'));
+    expect(damageRow).toBeDefined();
+    expect(damageRow).toContain('def base 50 eff 66');
+    expect(damageRow).toContain('mitigated 20');
+    expect(damageRow).toContain('final 20');
+  });
+
+  it('keeps two player cycles and the Boss cycle on their own sides and correlates each damage instance', () => {
+    const { harness, scene } = createBattle();
+
+    deliverTrace(
+      harness,
+      1,
+      combatTrace({
+        serverSequence: 1,
+        // Delivered order deliberately puts the Boss cycle first: array position
+        // attributes nothing (SIGNALR_PROTOCOL.md §3.3.2 item 2).
+        cycles: [
+          traceCycle({
+            ordinal: 2,
+            actor: 'boss',
+            fromCell: 40,
+            toCell: 41,
+            matchedGems: [{ gemType: 'HP', count: 3 }],
+            cascades: [{ depth: 1 }],
+          }),
+          traceCycle({
+            ordinal: 1,
+            actor: 'player',
+            fromCell: 27,
+            toCell: 28,
+            matchedGems: [
+              { gemType: 'ATK', count: 6 },
+              { gemType: 'DEF', count: 3 },
+            ],
+            cascades: [{ depth: 1 }, { depth: 2 }],
+          }),
+          traceCycle({
+            ordinal: 3,
+            actor: 'player',
+            fromCell: 0,
+            toCell: 8,
+            matchedGems: [{ gemType: 'POWER', count: 2 }],
+            cascades: [{ depth: 1 }],
+          }),
+        ],
+        damage: [
+          traceDamage({
+            ordinal: 2,
+            cycleOrdinal: 2,
+            source: 'boss',
+            target: 'player',
+            mitigatedDamage: 10,
+            finalDamage: 10,
+            defenderDefBase: 12,
+            defenderDefEffective: 12,
+            hpBefore: 1000,
+            hpAfter: 990,
+            hpLoss: 10,
+          }),
+          traceDamage({
+            ordinal: 1,
+            cycleOrdinal: 1,
+            source: 'player',
+            target: 'boss',
+            mitigatedDamage: 20,
+            finalDamage: 20,
+            defenderDefBase: 50,
+            defenderDefEffective: 66,
+            hpBefore: 5000,
+            hpAfter: 4980,
+            hpLoss: 20,
+          }),
+        ],
+        pet: { hpBefore: 1000, hpAfter: 990, defBase: 12, powerBefore: 40, powerAfter: 46 },
+        boss: { hpBefore: 5000, hpAfter: 4980, defBase: 50, powerBefore: 3, powerAfter: 3 },
+      })
+    );
+
+    const rows = scene.getMoveLogRows();
+    const petRow = rows.find((row) => row.includes('[PET]'));
+    const bossRow = rows.find((row) => row.includes('[BOSS]'));
+    expect(petRow).toBeDefined();
+    expect(bossRow).toBeDefined();
+
+    // Both player cycles and their matched Gems belong to PET and to PET only.
+    expect(petRow).toContain(
+      'CELL: 27->28 (ATKx6,DEFx3) cascades 2; 0->8 (POWERx2) cascades 1'
+    );
+    expect(petRow).not.toContain('40->41');
+    expect(petRow).not.toContain('HPx3');
+    // The Boss cycle belongs to BOSS and to BOSS only.
+    expect(bossRow).toContain('CELL: 40->41 (HPx3) cascades 1');
+    expect(bossRow).not.toContain('27->28');
+    expect(bossRow).not.toContain('ATKx6');
+
+    // Each side's delivered damage role comes from source/target, not position.
+    expect(petRow).toContain('DMG: out 20 in 10');
+    expect(bossRow).toContain('DMG: out 10 in 20');
+
+    // Two damage instances → two individually correlated rows in `ordinal` order.
+    const calcRows = rows.filter((row) => row.includes('DMG_CALC'));
+    expect(calcRows).toHaveLength(2);
+    expect(calcRows[0]).toContain('player->boss');
+    expect(calcRows[0]).toContain('def base 50 eff 66');
+    expect(calcRows[0]).toContain('final 20');
+    expect(calcRows[1]).toContain('boss->player');
+    expect(calcRows[1]).toContain('def base 12 eff 12');
+    expect(calcRows[1]).toContain('final 10');
+  });
+
+  it('renders a real zero DEF explicitly and an unknown Boss Power as ?', () => {
+    const { harness, scene } = createBattle();
+
+    deliverTrace(
+      harness,
+      1,
+      combatTrace({
+        serverSequence: 1,
+        cycles: [traceCycle()],
+        damage: [
+          traceDamage({
+            defenderDefBase: 0,
+            defenderDefEffective: 0,
+            mitigatedDamage: 15,
+            finalDamage: 15,
+            hpBefore: 200,
+            hpAfter: 185,
+            hpLoss: 15,
+          }),
+        ],
+        // The Boss snapshot the delivery carries omits Power: unknown, not zero.
+        boss: { hpBefore: 200, hpAfter: 185, defBase: 0 },
+      })
+    );
+
+    const rows = scene.getMoveLogRows();
+    const bossRow = rows.find((row) => row.includes('[BOSS]'));
+    expect(bossRow).toBeDefined();
+    expect(bossRow).toContain('DEF: base 0 eff 0');
+    expect(bossRow).toContain('POW: ?->? (?)');
+
+    const calcRow = rows.find((row) => row.includes('DMG_CALC'));
+    expect(calcRow).toBeDefined();
+    expect(calcRow).toContain('def base 0 eff 0');
+  });
+
+  it('shows shield absorption as shield and actual HP loss as HP loss', () => {
+    const { harness, scene } = createBattle();
+
+    deliverTrace(
+      harness,
+      1,
+      combatTrace({
+        serverSequence: 1,
+        cycles: [traceCycle()],
+        damage: [
+          traceDamage({
+            mitigatedDamage: 30,
+            finalDamage: 30,
+            shieldAbsorbed: 30,
+            hpBefore: 900,
+            hpAfter: 900,
+            hpLoss: 0,
+          }),
+        ],
+        boss: { hpBefore: 900, hpAfter: 900, defBase: 50, powerBefore: 3, powerAfter: 3 },
+      })
+    );
+
+    const rows = scene.getMoveLogRows();
+    const bossRow = rows.find((row) => row.includes('[BOSS]'));
+    expect(bossRow).toBeDefined();
+    expect(bossRow).toContain('SHIELD: 30');
+    expect(bossRow).toContain('DMG: out 0 in 30');
+    expect(bossRow).toContain('HP: 900->900 (+0, heal +0)');
+    expect(bossRow).not.toMatch(/-30/);
+
+    const calcRow = rows.find((row) => row.includes('DMG_CALC'));
+    expect(calcRow).toBeDefined();
+    expect(calcRow).toContain('shield 30');
+    expect(calcRow).toContain('hp 900->900 (-0)');
+    expect(calcRow).not.toContain('-30');
+  });
+
+  it('reports a full-HP heal as a +0 HP delta with the heal amount separately', () => {
+    const { harness, scene } = createBattle();
+
+    deliverTrace(
+      harness,
+      1,
+      combatTrace({
+        serverSequence: 1,
+        cycles: [traceCycle()],
+        healing: [traceHealing({ amount: 0, rawAmount: 15, hpBefore: 1000, hpAfter: 1000 })],
+        pet: { hpBefore: 1000, hpAfter: 1000, defBase: 12, powerBefore: 40, powerAfter: 40 },
+      })
+    );
+
+    const petRow = scene.getMoveLogRows().find((row) => row.includes('[PET]'));
+    expect(petRow).toBeDefined();
+    expect(petRow).toContain('HP: 1000->1000 (+0, heal +0)');
+    // A full-HP heal is not a positive HP delta.
+    expect(petRow).not.toContain('heal +15');
+    expect(petRow).not.toContain('(+15');
+  });
+
+  it('records a trace once per sequence and clears the rows on a battle identity change', () => {
+    const { harness, scene } = createBattle();
+    const trace = combatTrace({
+      serverSequence: 2,
+      cycles: [traceCycle()],
+      damage: [traceDamage()],
+    });
+
+    deliverTrace(harness, 2, trace);
+    const first = [...scene.getMoveLogRows()];
+    expect(first.length).toBeGreaterThan(0);
+
+    // A duplicate delivery of the same resolution adds no rows.
+    deliverTrace(harness, 2, trace);
+    expect(scene.getMoveLogRows()).toEqual(first);
+
+    // A stale sequence adds no rows either.
+    deliverTrace(
+      harness,
+      1,
+      combatTrace({ serverSequence: 1, cycles: [traceCycle()], damage: [traceDamage()] })
+    );
+    expect(scene.getMoveLogRows()).toEqual(first);
+
+    // A new battle identity clears the panel's rows (existing behaviour).
+    deliverTrace(
+      harness,
+      1,
+      combatTrace({ battleId: 'battle-253-next', serverSequence: 1, cycles: [traceCycle({ fromCell: 5, toCell: 6 })] }),
+      [],
+      'battle-253-next'
+    );
+    const rows = scene.getMoveLogRows();
+    expect(rows.filter((row) => row.includes('[PET]'))).toHaveLength(1);
+    expect(rows.find((row) => row.includes('[PET]'))).toContain('5->6');
+    expect(rows.some((row) => row.includes('27->28'))).toBe(false);
+  });
+
+  it('records no trace rows for a trace correlated to another battle or sequence', () => {
+    const { harness, scene } = createBattle();
+
+    // The batch is delivered, but its trace names another battle: treated absent.
+    harness.setBattleState(battleState({ sequence: 1 }));
+    harness.emitBattleEvents({
+      battleId: 'battle-253',
+      serverSequence: 1,
+      events: [],
+      combatTrace: combatTrace({ battleId: 'battle-other', serverSequence: 1, cycles: [traceCycle()] }),
+    } as BattleEventsEnvelope);
+    expect(scene.getMoveLogRows()).toEqual([]);
+
+    // A trace whose sequence differs from the envelope's is absent too.
+    harness.setBattleState(battleState({ sequence: 2 }));
+    harness.emitBattleEvents({
+      battleId: 'battle-253',
+      serverSequence: 2,
+      events: [],
+      combatTrace: combatTrace({ serverSequence: 99, cycles: [traceCycle()] }),
+    } as BattleEventsEnvelope);
+    expect(scene.getMoveLogRows()).toEqual([]);
   });
 });
 

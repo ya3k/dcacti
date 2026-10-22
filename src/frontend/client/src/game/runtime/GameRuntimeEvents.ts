@@ -62,6 +62,147 @@ export interface RuntimeEvent {
   readonly detail?: string | null;
 }
 
+// BEGIN TASK-321 combatTrace wire shape (SIGNALR_PROTOCOL.md §3 item 5, §3.3)
+// These members are the protocol's own wire names: the runtime's transport parser
+// names them verbatim and interprets none of them. The block is exempt from the
+// generic gameplay-term scan in `RuntimeBoundaries.test.ts` and nothing else is.
+
+/** The four Gem contract names a trace's matched-Gem count can carry (`MATCH3_RULES.md` §1.1). */
+export type CombatTraceGemType = 'ATK' | 'DEF' | 'HP' | 'POWER';
+
+/** One Gem type's cleared count inside a trace cycle (`SIGNALR_PROTOCOL.md` §3.3.1). */
+export interface CombatTraceMatchedGem {
+  readonly gemType: CombatTraceGemType;
+  readonly count: number;
+}
+
+/** One detection pass of a trace cycle, in depth order (`SIGNALR_PROTOCOL.md` §3.3.1). */
+export interface CombatTraceCascade {
+  readonly depth: number;
+}
+
+/** The two-sided party vocabulary a trace value belongs to (`SIGNALR_PROTOCOL.md` §3.3.1). */
+export type CombatTraceParty = 'player' | 'boss';
+
+/** The committed player move that carried the trace (`SIGNALR_PROTOCOL.md` §3.3.1). */
+export interface CombatTraceMove {
+  /** `"swap"` — the only move kind that carries a trace. */
+  readonly kind: 'swap';
+  /** The committed Swap's first §1.0 cell. */
+  readonly fromCell: number;
+  /** The committed Swap's second §1.0 cell. */
+  readonly toCell: number;
+}
+
+/**
+ * One actor cycle of the traced round (`SIGNALR_PROTOCOL.md` §3.3.1).
+ *
+ * `actor` is the cycle's own delivered member and the **only** actor truth
+ * (§3.3.2 item 2): a consumer never infers a side from this array's position or
+ * from a `MatchedGemSummary` index.
+ */
+export interface CombatTraceCycle {
+  /** 1-based order of this cycle within the batch. */
+  readonly ordinal: number;
+  readonly actor: CombatTraceParty;
+  readonly action: 'board' | 'card' | 'none';
+  /** The board action's cells; omitted unless `action === 'board'`. */
+  readonly fromCell?: number;
+  readonly toCell?: number;
+  /** The cast Card's definition identity; omitted unless `action === 'card'`. */
+  readonly cardId?: string;
+  /** That cycle's cleared-Gem counts, one entry per Gem type (may be empty). */
+  readonly matchedGems: readonly CombatTraceMatchedGem[];
+  /** One entry per detection pass of that cycle, in depth order (may be empty). */
+  readonly cascades: readonly CombatTraceCascade[];
+}
+
+/**
+ * One individually recorded damage instance (`SIGNALR_PROTOCOL.md` §3.3.1).
+ *
+ * Every member is the authoritative value the pipeline used. `mitigatedDamage`
+ * is the step-5 **damage** result, never a DEF stat; `shieldAbsorbed` is never
+ * also HP loss; `hpLoss` is the HP actually removed (§3.3.2 items 3–5).
+ */
+export interface CombatTraceDamage {
+  /** 1-based order within the batch. */
+  readonly ordinal: number;
+  readonly phase: 'attack' | 'statusTick';
+  /** The owning cycle's ordinal; omitted for a `statusTick`. */
+  readonly cycleOrdinal?: number;
+  readonly source: CombatTraceParty;
+  readonly target: CombatTraceParty;
+  readonly base: number;
+  readonly comboModifier: number;
+  readonly elementModifier: number;
+  readonly otherModifiers: number;
+  /** The step-5 result: post-DEF, pre-truncation damage (never a DEF stat). */
+  readonly mitigatedDamage: number;
+  /** The step-6 truncated Final Damage. */
+  readonly finalDamage: number;
+  /** The defender's stored base DEF; an explicit `0` is a real zero DEF. */
+  readonly defenderDefBase: number;
+  /** The effective DEF the step-5 mitigation actually used. */
+  readonly defenderDefEffective: number;
+  /** The part of the Final Damage the Shield absorbed (never also HP loss). */
+  readonly shieldAbsorbed: number;
+  readonly hpBefore: number;
+  readonly hpAfter: number;
+  /** The HP actually lost; `0` when a Shield absorbed everything. */
+  readonly hpLoss: number;
+}
+
+/** One heal the round applied, including one that restored 0 at full HP (§3.3.1). */
+export interface CombatTraceHealing {
+  readonly ordinal: number;
+  readonly cycleOrdinal: number;
+  readonly target: CombatTraceParty;
+  /** HP actually restored after modifiers and the MaxHP clamp; `0` at full HP. */
+  readonly amount: number;
+  /** The raw Heal Pool the heal was resolved from. */
+  readonly rawAmount: number;
+  readonly hpBefore: number;
+  readonly hpAfter: number;
+}
+
+/**
+ * One side's before/after snapshot (`SIGNALR_PROTOCOL.md` §3.3.1).
+ *
+ * A member the delivery does not carry stays `undefined` and is rendered as the
+ * established unknown `?` — never replaced by a default and never by a
+ * state-push value (§3.3.2 item 7).
+ */
+export interface CombatTraceTargetSnapshot {
+  readonly hpBefore?: number;
+  readonly hpAfter?: number;
+  /** The stored base DEF (never rewritten by a buff). */
+  readonly defBase?: number;
+  readonly powerBefore?: number;
+  readonly powerAfter?: number;
+}
+
+/**
+ * The optional `combatTrace` member of the `ReceiveEvents` envelope
+ * (`SIGNALR_PROTOCOL.md` §3 item 5, §3.3).
+ *
+ * It is the authoritative report of the values the resolution already computed,
+ * not an event and not a second source of state. `battleId`/`serverSequence`
+ * repeat the envelope's own values and are compared against them before the
+ * trace is forwarded (§3.3.2 item 2).
+ */
+export interface CombatTrace {
+  readonly battleId: string;
+  readonly serverSequence: number;
+  readonly move: CombatTraceMove;
+  readonly cycles: readonly CombatTraceCycle[];
+  readonly damage: readonly CombatTraceDamage[];
+  readonly healing: readonly CombatTraceHealing[];
+  readonly pet: CombatTraceTargetSnapshot;
+  readonly boss: CombatTraceTargetSnapshot;
+}
+
+// END TASK-321 combatTrace wire shape
+
 /**
  * A transport-agnostic battle event envelope forwarded from the server.
  *
@@ -93,6 +234,17 @@ export interface BattleEventsEnvelope {
    * Present on accepted Swap resolutions; omitted or null when not applicable.
    */
   readonly intermediatePetHp?: number | null;
+  /**
+   * The authoritative per-move combat telemetry of a committed Swap
+   * (`SIGNALR_PROTOCOL.md` §3 item 5, §3.3), or absent when the delivery carries
+   * none — for a non-Swap resolution, for a reconnect replay, or when the
+   * delivered trace was malformed or its own `battleId`/`serverSequence` did not
+   * equal the envelope's (§3.3.2 item 2).
+   *
+   * It is envelope metadata only: the runtime parses and forwards it verbatim
+   * and interprets none of its values (`ARCHITECTURE.md` §2.2.1 rule 4).
+   */
+  readonly combatTrace?: CombatTrace;
 }
 
 /** Listener signature for runtime (technical) lifecycle events. */
@@ -826,3 +978,333 @@ export interface GameRuntimeOptions {
    */
   readonly resolutionWatchdogMs?: number;
 }
+
+// BEGIN TASK-321 combatTrace wire reader
+// ---------------------------------------------------------------------------
+// The `combatTrace` wire-shape reader (SIGNALR_PROTOCOL.md §3 item 5, §3.3)
+//
+// It lives beside the wire interfaces it reads, and `GameRuntime` calls it while
+// rebuilding the `ReceiveEvents` envelope. It parses the delivered shape and
+// interprets no gameplay value, re-derives none, and repairs none.
+// ---------------------------------------------------------------------------
+
+/** A finite numeric member, or `undefined` when the delivery carries none. */
+function readFiniteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Reads an array member by parsing every item; `null` when it is not an array or
+ * any item is malformed.
+ *
+ * A malformed item makes the whole trace malformed rather than being skipped:
+ * the trace is an all-or-nothing report of one resolution, and dropping one
+ * damage instance would silently retell it (`SIGNALR_PROTOCOL.md` §3.3.2 item 3).
+ */
+function readArrayMember<T>(value: unknown, readItem: (item: unknown) => T | null): T[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const items: T[] = [];
+  for (const item of value) {
+    const parsed = readItem(item);
+    if (parsed === null) {
+      return null;
+    }
+    items.push(parsed);
+  }
+
+  return items;
+}
+
+/**
+ * Reads an optional numeric member of an object.
+ *
+ * Returns `undefined` when the member is absent or `null` (a not-applicable
+ * omission, `SIGNALR_PROTOCOL.md` §3.2.5) and `null` when it is present but not
+ * a finite number — the latter makes the trace malformed.
+ */
+function readOptionalNumber(
+  candidate: Record<string, unknown>,
+  member: string
+): number | undefined | null {
+  const value = candidate[member];
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  return readFiniteNumber(value) ?? null;
+}
+
+/** Reads the `move` object of a trace (`SIGNALR_PROTOCOL.md` §3.3.1). */
+function readCombatTraceMove(value: unknown): CombatTraceMove | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const fromCell = readFiniteNumber(candidate.fromCell);
+  const toCell = readFiniteNumber(candidate.toCell);
+
+  if (candidate.kind !== 'swap' || fromCell === undefined || toCell === undefined) {
+    return null;
+  }
+
+  return { kind: 'swap', fromCell, toCell };
+}
+
+/** Reads one `cycles[]` entry (`SIGNALR_PROTOCOL.md` §3.3.1). */
+function readCombatTraceCycle(value: unknown): CombatTraceCycle | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const ordinal = readFiniteNumber(candidate.ordinal);
+  const actor =
+    candidate.actor === 'player' || candidate.actor === 'boss' ? candidate.actor : null;
+  const action =
+    candidate.action === 'board' || candidate.action === 'card' || candidate.action === 'none'
+      ? candidate.action
+      : null;
+  const fromCell = readOptionalNumber(candidate, 'fromCell');
+  const toCell = readOptionalNumber(candidate, 'toCell');
+  const cardId = candidate.cardId;
+  const matchedGems = readArrayMember(candidate.matchedGems, readCombatTraceMatchedGem);
+  const cascades = readArrayMember(candidate.cascades, readCombatTraceCascade);
+
+  if (
+    ordinal === undefined ||
+    actor === null ||
+    action === null ||
+    fromCell === null ||
+    toCell === null ||
+    (cardId !== undefined && cardId !== null && typeof cardId !== 'string') ||
+    matchedGems === null ||
+    cascades === null
+  ) {
+    return null;
+  }
+
+  return {
+    ordinal,
+    actor,
+    action,
+    ...(fromCell !== undefined ? { fromCell } : {}),
+    ...(toCell !== undefined ? { toCell } : {}),
+    ...(typeof cardId === 'string' ? { cardId } : {}),
+    matchedGems,
+    cascades,
+  };
+}
+
+/** Reads one `matchedGems[]` entry (`SIGNALR_PROTOCOL.md` §3.3.1). */
+function readCombatTraceMatchedGem(value: unknown): CombatTraceMatchedGem | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const count = readFiniteNumber(candidate.count);
+
+  if (
+    (candidate.gemType !== 'ATK' &&
+      candidate.gemType !== 'DEF' &&
+      candidate.gemType !== 'HP' &&
+      candidate.gemType !== 'POWER') ||
+    count === undefined
+  ) {
+    return null;
+  }
+
+  return { gemType: candidate.gemType, count };
+}
+
+/** Reads one `cascades[]` entry (`SIGNALR_PROTOCOL.md` §3.3.1). */
+function readCombatTraceCascade(value: unknown): CombatTraceCascade | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+
+  const depth = readFiniteNumber((value as Record<string, unknown>).depth);
+
+  return depth === undefined ? null : { depth };
+}
+
+/** Reads one `damage[]` entry (`SIGNALR_PROTOCOL.md` §3.3.1). */
+function readCombatTraceDamage(value: unknown): CombatTraceDamage | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const phase =
+    candidate.phase === 'attack' || candidate.phase === 'statusTick' ? candidate.phase : null;
+  const source = combatTraceParty(candidate.source);
+  const target = combatTraceParty(candidate.target);
+  const cycleOrdinal = readOptionalNumber(candidate, 'cycleOrdinal');
+  const numericMembers = {
+    ordinal: readFiniteNumber(candidate.ordinal),
+    base: readFiniteNumber(candidate.base),
+    comboModifier: readFiniteNumber(candidate.comboModifier),
+    elementModifier: readFiniteNumber(candidate.elementModifier),
+    otherModifiers: readFiniteNumber(candidate.otherModifiers),
+    mitigatedDamage: readFiniteNumber(candidate.mitigatedDamage),
+    finalDamage: readFiniteNumber(candidate.finalDamage),
+    defenderDefBase: readFiniteNumber(candidate.defenderDefBase),
+    defenderDefEffective: readFiniteNumber(candidate.defenderDefEffective),
+    shieldAbsorbed: readFiniteNumber(candidate.shieldAbsorbed),
+    hpBefore: readFiniteNumber(candidate.hpBefore),
+    hpAfter: readFiniteNumber(candidate.hpAfter),
+    hpLoss: readFiniteNumber(candidate.hpLoss),
+  };
+
+  if (
+    phase === null ||
+    source === null ||
+    target === null ||
+    cycleOrdinal === null ||
+    Object.values(numericMembers).some((member) => member === undefined)
+  ) {
+    return null;
+  }
+
+  return {
+    ordinal: numericMembers.ordinal as number,
+    phase,
+    ...(cycleOrdinal !== undefined ? { cycleOrdinal } : {}),
+    source,
+    target,
+    base: numericMembers.base as number,
+    comboModifier: numericMembers.comboModifier as number,
+    elementModifier: numericMembers.elementModifier as number,
+    otherModifiers: numericMembers.otherModifiers as number,
+    mitigatedDamage: numericMembers.mitigatedDamage as number,
+    finalDamage: numericMembers.finalDamage as number,
+    defenderDefBase: numericMembers.defenderDefBase as number,
+    defenderDefEffective: numericMembers.defenderDefEffective as number,
+    shieldAbsorbed: numericMembers.shieldAbsorbed as number,
+    hpBefore: numericMembers.hpBefore as number,
+    hpAfter: numericMembers.hpAfter as number,
+    hpLoss: numericMembers.hpLoss as number,
+  };
+}
+
+/** Reads one `healing[]` entry (`SIGNALR_PROTOCOL.md` §3.3.1). */
+function readCombatTraceHealing(value: unknown): CombatTraceHealing | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const target = combatTraceParty(candidate.target);
+  const numericMembers = {
+    ordinal: readFiniteNumber(candidate.ordinal),
+    cycleOrdinal: readFiniteNumber(candidate.cycleOrdinal),
+    amount: readFiniteNumber(candidate.amount),
+    rawAmount: readFiniteNumber(candidate.rawAmount),
+    hpBefore: readFiniteNumber(candidate.hpBefore),
+    hpAfter: readFiniteNumber(candidate.hpAfter),
+  };
+
+  if (
+    target === null ||
+    Object.values(numericMembers).some((member) => member === undefined)
+  ) {
+    return null;
+  }
+
+  return {
+    ordinal: numericMembers.ordinal as number,
+    cycleOrdinal: numericMembers.cycleOrdinal as number,
+    target,
+    amount: numericMembers.amount as number,
+    rawAmount: numericMembers.rawAmount as number,
+    hpBefore: numericMembers.hpBefore as number,
+    hpAfter: numericMembers.hpAfter as number,
+  };
+}
+
+/**
+ * Reads one side's before/after snapshot (`SIGNALR_PROTOCOL.md` §3.3.1).
+ *
+ * The object itself is required, but each member is optional: a value the
+ * delivery does not carry stays unknown and is rendered as `?` — never defaulted
+ * and never taken from a state push (§3.3.2 item 7).
+ */
+function readCombatTraceSnapshot(value: unknown): CombatTraceTargetSnapshot | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const hpBefore = readFiniteNumber(candidate.hpBefore);
+  const hpAfter = readFiniteNumber(candidate.hpAfter);
+  const defBase = readFiniteNumber(candidate.defBase);
+  const powerBefore = readFiniteNumber(candidate.powerBefore);
+  const powerAfter = readFiniteNumber(candidate.powerAfter);
+
+  return {
+    ...(hpBefore !== undefined ? { hpBefore } : {}),
+    ...(hpAfter !== undefined ? { hpAfter } : {}),
+    ...(defBase !== undefined ? { defBase } : {}),
+    ...(powerBefore !== undefined ? { powerBefore } : {}),
+    ...(powerAfter !== undefined ? { powerAfter } : {}),
+  };
+}
+
+/** Reads a trace's `"player"`/`"boss"` party member (`SIGNALR_PROTOCOL.md` §3.3.1). */
+function combatTraceParty(value: unknown): CombatTraceParty | null {
+  return value === 'player' || value === 'boss' ? value : null;
+}
+
+/**
+ * Parses the optional `combatTrace` member of a `ReceiveEvents` envelope
+ * (`SIGNALR_PROTOCOL.md` §3 item 5, §3.3).
+ *
+ * A trace whose own `battleId`/`serverSequence` do not repeat the envelope's is
+ * `null` — treated as absent for that delivery and never as a row of the current
+ * move (§3.3.2 item 2). The rest is parsed as the documented wire shape: arrays,
+ * objects, strings, and finite numbers. Nothing is defaulted, inverted, or
+ * re-derived.
+ */
+export function readCombatTrace(
+  value: unknown,
+  battleId: string,
+  serverSequence: number
+): CombatTrace | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  if (candidate.battleId !== battleId) {
+    return null;
+  }
+  if (readFiniteNumber(candidate.serverSequence) !== serverSequence) {
+    return null;
+  }
+
+  const move = readCombatTraceMove(candidate.move);
+  const cycles = readArrayMember(candidate.cycles, readCombatTraceCycle);
+  const damage = readArrayMember(candidate.damage, readCombatTraceDamage);
+  const healing = readArrayMember(candidate.healing, readCombatTraceHealing);
+  const pet = readCombatTraceSnapshot(candidate.pet);
+  const boss = readCombatTraceSnapshot(candidate.boss);
+
+  if (
+    move === null ||
+    cycles === null ||
+    damage === null ||
+    healing === null ||
+    pet === null ||
+    boss === null
+  ) {
+    return null;
+  }
+
+  return { battleId, serverSequence, move, cycles, damage, healing, pet, boss };
+}
+
+// END TASK-321 combatTrace wire reader

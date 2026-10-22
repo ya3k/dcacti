@@ -107,6 +107,17 @@ public readonly record struct AttackQualification(bool HasConfirmedAtkMatch)
 /// <param name="DefenderShieldPool">The defending target's remaining Shield pool after resolution.</param>
 /// <param name="RngState">The authoritative PRNG state after resolution.</param>
 /// <param name="Events">The damage events produced (<c>DamageCalculated</c>, <c>DamageDealt</c>, <c>DamageTaken</c>).</param>
+/// <param name="DefenderDefenseBase">
+/// The defender's stored base DEF the pipeline's step 5 was given, or <c>0</c>
+/// when no damage instance was priced (<c>CombatTrace</c> reporting only —
+/// never a gameplay input; <c>COMBAT_RULES.md</c> §3.2).
+/// </param>
+/// <param name="DefenderDefenseEffective">
+/// The effective DEF — base plus every active <c>TargetStat = "DEF"</c> modifier —
+/// that the pipeline's step 5 was actually given, or <c>0</c> when no instance
+/// was priced. It is the exact value used for mitigation, echoed so telemetry
+/// needs no second computation (<c>COMBAT_RULES.md</c> §5.4.6, §5.5.6).
+/// </param>
 public readonly record struct AttackResolutionResult(
     bool IsQualifyingAttack,
     DamageResult? DamageResult,
@@ -114,7 +125,9 @@ public readonly record struct AttackResolutionResult(
     int DefenderHp,
     int DefenderShieldPool,
     RngState RngState,
-    IReadOnlyList<BattleEvent> Events)
+    IReadOnlyList<BattleEvent> Events,
+    int DefenderDefenseBase = 0,
+    int DefenderDefenseEffective = 0)
 {
     /// <summary>
     /// Creates a non-qualifying attack result when the acting actor's own resolution
@@ -178,7 +191,12 @@ public static class AttackResolution
         // COMBAT_RULES.md §3.2 / §5.5.6: step 5's mitigation input is the Boss's
         // EFFECTIVE DEF — the stored base plus every active TargetStat = "DEF"
         // BuffDebuff contribution (TASK-299). The stored stat is read, never
-        // written.
+        // written. The two values are computed once here and echoed on the result
+        // for combat tracing, so telemetry never re-derives what step 5 read.
+        var defenderDefenseBase = bossState.DEF;
+        var defenderDefenseEffective = StatusEffectLifecycle.EffectiveBossDefense(
+            bossState.DEF,
+            bossState.ActiveStatusEffects);
         var attackInputs = new DamagePipeline.DamageInputs(
             Attack: StatusEffectLifecycle.EffectiveAttack(
                 petState.ATK,
@@ -188,9 +206,7 @@ public static class AttackResolution
             Combo: combo,
             AttackerElement: petState.Element,
             DefenderElement: bossState.Element,
-            DefenderDefense: StatusEffectLifecycle.EffectiveBossDefense(
-                bossState.DEF,
-                bossState.ActiveStatusEffects),
+            DefenderDefense: defenderDefenseEffective,
             DefenderHp: bossState.HP,
             Source: DamageParty.Player,
             Target: DamageParty.Boss,
@@ -218,7 +234,9 @@ public static class AttackResolution
             DefenderHp: damageResult.TargetHp,
             DefenderShieldPool: damageResult.RemainingShieldPool,
             RngState: damageResult.UpdatedRngState,
-            Events: events);
+            Events: events,
+            DefenderDefenseBase: defenderDefenseBase,
+            DefenderDefenseEffective: defenderDefenseEffective);
     }
 
     /// <summary>
@@ -245,7 +263,12 @@ public static class AttackResolution
         // EFFECTIVE DEF — the stored base plus every active TargetStat = "DEF"
         // BuffDebuff contribution (TASK-299). The Player's DEF-Gem buff is applied
         // at the same Round's step 12/14, before this Boss attack, and is what
-        // makes it "one-turn defense".
+        // makes it "one-turn defense". The values are computed once and echoed on
+        // the result for combat tracing.
+        var defenderDefenseBase = petState.DEF;
+        var defenderDefenseEffective = StatusEffectLifecycle.EffectivePetDefense(
+            petState.DEF,
+            petState.ActiveStatusEffects);
         var attackInputs = new DamagePipeline.DamageInputs(
             Attack: StatusEffectLifecycle.EffectiveBossAttack(
                 bossState.ATK,
@@ -254,9 +277,7 @@ public static class AttackResolution
             Combo: combo,
             AttackerElement: bossState.Element,
             DefenderElement: petState.Element,
-            DefenderDefense: StatusEffectLifecycle.EffectivePetDefense(
-                petState.DEF,
-                petState.ActiveStatusEffects),
+            DefenderDefense: defenderDefenseEffective,
             DefenderHp: petState.HP,
             Source: DamageParty.Boss,
             Target: DamageParty.Player,
@@ -283,7 +304,9 @@ public static class AttackResolution
             DefenderHp: damageResult.TargetHp,
             DefenderShieldPool: damageResult.RemainingShieldPool,
             RngState: damageResult.UpdatedRngState,
-            Events: events);
+            Events: events,
+            DefenderDefenseBase: defenderDefenseBase,
+            DefenderDefenseEffective: defenderDefenseEffective);
     }
 
     /// <summary>

@@ -30,6 +30,12 @@
  * - Unknown event types are safely ignored with no fabricated presentation.
  */
 
+import type {
+  CombatTrace,
+  CombatTraceCycle,
+  CombatTraceParty,
+} from '../runtime/GameRuntimeEvents';
+
 /**
  * One committed board action's own boundary event — which side acted and the two
  * §1.0 cells its accepted action named (`GAME_EVENTS.md` §2,
@@ -1590,7 +1596,7 @@ export type MoveLogLifecycleScope = 'timeline' | 'phase';
 /**
  * Everything one Move Log row can be built from.
  *
- * It is a discriminated union of the three row kinds the panel draws, and every
+ * It is a discriminated union of the five row kinds the panel draws, and every
  * member of every kind is either a delivered wire value, the client's own
  * orchestration fact, or a counter the panel owns. Nothing here is derived from a
  * gameplay rule, and no row can be constructed for an event the server did not
@@ -1624,7 +1630,82 @@ export type MoveLogRowInput =
       readonly outcome: string;
       readonly finalBossHp: number;
       readonly finalPlayerHp: number;
-    };
+    }
+  | CombatTraceTargetRowInput
+  | CombatTraceDamageRowInput;
+
+/**
+ * One side's trace-sourced target row (`SIGNALR_PROTOCOL.md` §3.3).
+ *
+ * Every value is read from the authoritative trace: `defBase` from the side's
+ * snapshot, `defEffective` from the damage instances that actually targeted the
+ * side, and the HP/POW deltas are display arithmetic over the trace's own
+ * before/after pair. A value the trace does not carry stays `undefined` and is
+ * rendered as `?` — never turned into a default (`§3.3.2` item 7).
+ */
+export interface CombatTraceTargetRowInput {
+  readonly kind: 'trace-target';
+  readonly ordinal: number;
+  readonly sequence: number;
+  readonly turn: number | null;
+  readonly target: 'PET' | 'BOSS';
+  /** The cells, matched-Gem counts, and cascade count of this side's cycles. */
+  readonly cell: string;
+  /** Σ `finalDamage` where `source` is this side. */
+  readonly damageOut: number;
+  /** Σ `finalDamage` where `target` is this side. */
+  readonly damageIn: number;
+  readonly defBase: number | undefined;
+  /** The distinct effective DEF values the damage targeting this side used. */
+  readonly defEffective: readonly number[];
+  readonly hpBefore: number | undefined;
+  readonly hpAfter: number | undefined;
+  /** Σ `healing[].amount` where `target` is this side. */
+  readonly healTotal: number;
+  readonly powerBefore: number | undefined;
+  readonly powerAfter: number | undefined;
+  /** Σ `shieldAbsorbed` where `target` is this side (never HP loss). */
+  readonly shieldAbsorbed: number;
+}
+
+/** One `damage[]` instance's row, individually correlated (`SIGNALR_PROTOCOL.md` §3.3). */
+export interface CombatTraceDamageRowInput {
+  readonly kind: 'trace-damage';
+  readonly ordinal: number;
+  readonly sequence: number;
+  readonly turn: number | null;
+  readonly phase: string;
+  readonly source: string;
+  readonly target: string;
+  readonly base: number | undefined;
+  readonly comboModifier: number | undefined;
+  readonly elementModifier: number | undefined;
+  readonly otherModifiers: number | undefined;
+  readonly mitigatedDamage: number | undefined;
+  readonly finalDamage: number | undefined;
+  readonly defenderDefBase: number | undefined;
+  readonly defenderDefEffective: number | undefined;
+  readonly shieldAbsorbed: number | undefined;
+  readonly hpBefore: number | undefined;
+  readonly hpAfter: number | undefined;
+  readonly hpLoss: number | undefined;
+}
+
+/** A delivered trace number, or the established unknown `?` when none was carried. */
+function displayTraceNumber(value: number | undefined): string {
+  return value === undefined ? '?' : `${value}`;
+}
+
+/** `+0`, `+5`, or `-20` for a before/after pair; `?` when either side is unknown. */
+function displayTraceDelta(before: number | undefined, after: number | undefined): string {
+  if (before === undefined || after === undefined) {
+    return '?';
+  }
+
+  const delta = after - before;
+
+  return delta > 0 ? `+${delta}` : delta === 0 ? '+0' : `${delta}`;
+}
 
 /**
  * Formats exactly one Move Log row.
@@ -1638,7 +1719,14 @@ export type MoveLogRowInput =
  *   vocabulary the row can name;
  * - `actor`/`action` come from the one adapter (`adaptPresentedEvent`), and are
  *   `-` when the delivered members name neither — never guessed (`AGENTS.md` §10);
- * - `turn` is `-` when no `BattleStateUpdated` has been delivered.
+ * - `turn` is `-` when no `BattleStateUpdated` has been delivered;
+ * - a trace target row displays one side's CELL/DMG/DEF/HP/POW/SHIELD columns
+ *   from the authoritative trace;
+ * - a trace damage row reports the pipeline breakdown and the base/effective DEF
+ *   the step actually used;
+ * - the only arithmetic is display arithmetic over delivered pairs (a delta is
+ *   `after - before`, a column total is a sum of delivered members). Nothing is
+ *   inverted, predicted, or reconstructed.
  *
  * It performs no gameplay calculation, evaluates no rule, and infers no value the
  * server did not deliver.
@@ -1660,7 +1748,156 @@ export function formatMoveLogRow(row: MoveLogRowInput): string {
 
     case 'outcome':
       return `#${row.ordinal} outcome ${row.outcome} bossHp=${row.finalBossHp} playerHp=${row.finalPlayerHp}`;
+
+    case 'trace-target': {
+      const turn = row.turn === null ? '-' : `${row.turn}`;
+      const effective =
+        row.defEffective.length === 0 ? '?' : row.defEffective.join('/');
+
+      return (
+        `#${row.ordinal} seq=${row.sequence} turn=${turn} [${row.target}]` +
+        ` CELL: ${row.cell}` +
+        ` | DMG: out ${row.damageOut} in ${row.damageIn}` +
+        ` | DEF: base ${displayTraceNumber(row.defBase)} eff ${effective}` +
+        ` | HP: ${displayTraceNumber(row.hpBefore)}->${displayTraceNumber(row.hpAfter)}` +
+        ` (${displayTraceDelta(row.hpBefore, row.hpAfter)}, heal +${row.healTotal})` +
+        ` | POW: ${displayTraceNumber(row.powerBefore)}->${displayTraceNumber(row.powerAfter)}` +
+        ` (${displayTraceDelta(row.powerBefore, row.powerAfter)})` +
+        ` | SHIELD: ${row.shieldAbsorbed}`
+      );
+    }
+
+    case 'trace-damage': {
+      const turn = row.turn === null ? '-' : `${row.turn}`;
+      const number = displayTraceNumber;
+
+      return (
+        `#${row.ordinal} seq=${row.sequence} turn=${turn}` +
+        ` DMG_CALC kind=${row.phase} ${row.source}->${row.target}` +
+        ` | base ${number(row.base)} * combo ${number(row.comboModifier)}x` +
+        ` * elem ${number(row.elementModifier)}x * other ${number(row.otherModifiers)}x` +
+        ` | def base ${number(row.defenderDefBase)} eff ${number(row.defenderDefEffective)}` +
+        ` -> mitigated ${number(row.mitigatedDamage)}` +
+        ` | final ${number(row.finalDamage)}` +
+        ` | shield ${number(row.shieldAbsorbed)}` +
+        ` | hp ${number(row.hpBefore)}->${number(row.hpAfter)}` +
+        ` (${row.hpLoss === undefined ? '?' : `-${row.hpLoss}`})`
+      );
+    }
   }
+}
+
+/**
+ * Builds one trace's Move Log rows (`SIGNALR_PROTOCOL.md` §3.3).
+ *
+ * The order is the contract's own: one target row per side, PET then BOSS,
+ * followed by one row per `damage[]` instance in `ordinal` order (`§3.3.2`
+ * item 3). Both sides' snapshots are mandatory members of a trace (§3.3.1), so
+ * both target rows exist; a side the round recorded no cycle for renders its
+ * CELL column as `-` rather than losing its row.
+ *
+ * Attribution is by the trace's own members and nothing else: a cycle belongs to
+ * the side its delivered `actor` names, a damage instance to its delivered
+ * `source`/`target`, and a heal to its delivered `target`. No actor is inferred
+ * from an array position or from a `MatchedGemSummary` index (`§3.3.2` item 2).
+ *
+ * Every demonstrated number is the trace's own value; the only arithmetic is
+ * display aggregation (a column total, an `after - before` delta) over those
+ * delivered values. `nextOrdinal` supplies the panel's continuing row counter.
+ */
+export function combatTraceMoveLogRows(
+  trace: CombatTrace,
+  sequence: number,
+  turn: number | null,
+  nextOrdinal: () => number
+): readonly MoveLogRowInput[] {
+  const rows: MoveLogRowInput[] = [];
+  const cycles = [...trace.cycles].sort((left, right) => left.ordinal - right.ordinal);
+  const damage = [...trace.damage].sort((left, right) => left.ordinal - right.ordinal);
+
+  for (const target of ['PET', 'BOSS'] as const) {
+    const actor: CombatTraceParty = target === 'PET' ? 'player' : 'boss';
+    const snapshot = target === 'PET' ? trace.pet : trace.boss;
+    const sideCycles = cycles.filter((cycle) => cycle.actor === actor);
+    const received = damage.filter((instance) => instance.target === actor);
+    const delivered = damage.filter((instance) => instance.source === actor);
+    const heals = trace.healing.filter((heal) => heal.target === actor);
+
+    const effectiveDefs: number[] = [];
+    for (const instance of received) {
+      if (!effectiveDefs.includes(instance.defenderDefEffective)) {
+        effectiveDefs.push(instance.defenderDefEffective);
+      }
+    }
+
+    rows.push({
+      kind: 'trace-target',
+      ordinal: nextOrdinal(),
+      sequence,
+      turn,
+      target,
+      cell: describeTraceCycles(sideCycles),
+      damageOut: delivered.reduce((total, instance) => total + instance.finalDamage, 0),
+      damageIn: received.reduce((total, instance) => total + instance.finalDamage, 0),
+      defBase: snapshot.defBase,
+      defEffective: effectiveDefs,
+      hpBefore: snapshot.hpBefore,
+      hpAfter: snapshot.hpAfter,
+      healTotal: heals.reduce((total, heal) => total + heal.amount, 0),
+      powerBefore: snapshot.powerBefore,
+      powerAfter: snapshot.powerAfter,
+      shieldAbsorbed: received.reduce((total, instance) => total + instance.shieldAbsorbed, 0),
+    });
+  }
+
+  for (const instance of damage) {
+    rows.push({
+      kind: 'trace-damage',
+      ordinal: nextOrdinal(),
+      sequence,
+      turn,
+      phase: instance.phase,
+      source: instance.source,
+      target: instance.target,
+      base: instance.base,
+      comboModifier: instance.comboModifier,
+      elementModifier: instance.elementModifier,
+      otherModifiers: instance.otherModifiers,
+      mitigatedDamage: instance.mitigatedDamage,
+      finalDamage: instance.finalDamage,
+      defenderDefBase: instance.defenderDefBase,
+      defenderDefEffective: instance.defenderDefEffective,
+      shieldAbsorbed: instance.shieldAbsorbed,
+      hpBefore: instance.hpBefore,
+      hpAfter: instance.hpAfter,
+      hpLoss: instance.hpLoss,
+    });
+  }
+
+  return rows;
+}
+
+/** One side's CELL column: its own cycles in ordinal order, or `-` when none. */
+function describeTraceCycles(cycles: readonly CombatTraceCycle[]): string {
+  if (cycles.length === 0) {
+    return '-';
+  }
+
+  return cycles.map(describeTraceCycle).join('; ');
+}
+
+/** One cycle's cells, matched-Gem counts, and cascade count. */
+function describeTraceCycle(cycle: CombatTraceCycle): string {
+  const cell = (value: number | undefined): string => (value === undefined ? '?' : `${value}`);
+  const action =
+    cycle.action === 'board'
+      ? `${cell(cycle.fromCell)}->${cell(cycle.toCell)}`
+      : cycle.action === 'card'
+        ? `card ${cycle.cardId ?? '?'}`
+        : '-';
+  const gems = cycle.matchedGems.map((gem) => `${gem.gemType}x${gem.count}`).join(',');
+
+  return `${action}${gems.length > 0 ? ` (${gems})` : ''} cascades ${cycle.cascades.length}`;
 }
 
 // ---------------------------------------------------------------------------

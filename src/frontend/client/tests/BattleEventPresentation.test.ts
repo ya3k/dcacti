@@ -5,7 +5,11 @@ import { BattleScene } from '../src/game/scenes/BattleScene';
 import { RUNTIME_REGISTRY_KEY } from '../src/game/runtime/RuntimeRegistry';
 import { INITIAL_RUNTIME_STATE } from '../src/state/GameRuntimeState';
 import type { GameRuntimeState } from '../src/state/GameRuntimeState';
-import type { BattleEventsEnvelope, RuntimeBattleState } from '../src/game/runtime/GameRuntimeEvents';
+import type {
+  BattleEventsEnvelope,
+  CombatTrace,
+  RuntimeBattleState,
+} from '../src/game/runtime/GameRuntimeEvents';
 import { SceneEventEmitter } from './support/SceneEventEmitter';
 import {
   parseInBattleEvent,
@@ -30,6 +34,7 @@ import {
   INTERACTION_YOUR_TURN,
   resolveOutcomeStatement,
   MOVE_LOG_TITLE,
+  combatTraceMoveLogRows,
   formatMoveLogRow,
 } from '../src/game/scenes/BattleEventPresenter';
 import {
@@ -967,15 +972,23 @@ describe('TASK-245 — the SignalR wire contract is unchanged (PD-3, PD-4)', () 
   );
 
   it('keeps the ReceiveEvents envelope at exactly its documented members', () => {
-    // SIGNALR_PROTOCOL.md §3: `ReceiveEvents(battleId, serverSequence, events[], intermediatePetHp?)`.
-    // The presentation timeline reads those members and nothing else.
+    // SIGNALR_PROTOCOL.md §3:
+    // `ReceiveEvents(battleId, serverSequence, events[], intermediatePetHp?, combatTrace?)`.
+    // TASK-321 added the optional `combatTrace` (§3.3) and nothing else; the
+    // presentation timeline reads those members and no others.
     const body =
       /export interface BattleEventsEnvelope \{([\s\S]*?)\n\}/.exec(runtimeEventsSource)?.[1] ?? '';
     // Member declarations are the interface's own two-space-indented lines; the
     // `readonly unknown[]` in the `events` member's type is not one of them.
     const members = [...body.matchAll(/^ {2}readonly (\w+)/gm)].map((match) => match[1]);
 
-    expect(members).toEqual(['battleId', 'serverSequence', 'events', 'intermediatePetHp']);
+    expect(members).toEqual([
+      'battleId',
+      'serverSequence',
+      'events',
+      'intermediatePetHp',
+      'combatTrace',
+    ]);
   });
 
   it('keeps CascadeCreated at exactly { type, cascadeDepth }', () => {
@@ -3119,6 +3132,339 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
         finalPlayerHp: 85,
       })
     ).toBe('#11 outcome victory bossHp=0 playerHp=85');
+  });
+
+  it('formats one trace target row per side from the authoritative trace columns', () => {
+    expect(
+      formatMoveLogRow({
+        kind: 'trace-target',
+        ordinal: 1,
+        sequence: 42,
+        turn: 3,
+        target: 'PET',
+        cell: '27->28 (ATKx6,DEFx3) cascades 2',
+        damageOut: 20,
+        damageIn: 10,
+        defBase: 12,
+        defEffective: [12],
+        hpBefore: 100,
+        hpAfter: 80,
+        healTotal: 5,
+        powerBefore: 40,
+        powerAfter: 46,
+        shieldAbsorbed: 0,
+      })
+    ).toBe(
+      '#1 seq=42 turn=3 [PET] CELL: 27->28 (ATKx6,DEFx3) cascades 2 | DMG: out 20 in 10 | DEF: base 12 eff 12 | HP: 100->80 (-20, heal +5) | POW: 40->46 (+6) | SHIELD: 0'
+    );
+
+    expect(
+      formatMoveLogRow({
+        kind: 'trace-target',
+        ordinal: 2,
+        sequence: 42,
+        turn: 3,
+        target: 'BOSS',
+        cell: '-',
+        damageOut: 10,
+        damageIn: 20,
+        defBase: 50,
+        defEffective: [50, 66],
+        hpBefore: 900,
+        hpAfter: 880,
+        healTotal: 0,
+        powerBefore: 3,
+        powerAfter: 3,
+        shieldAbsorbed: 7,
+      })
+    ).toBe(
+      '#2 seq=42 turn=3 [BOSS] CELL: - | DMG: out 10 in 20 | DEF: base 50 eff 50/66 | HP: 900->880 (-20, heal +0) | POW: 3->3 (+0) | SHIELD: 7'
+    );
+  });
+
+  it('renders a real zero as 0 and an unknown trace value as the established ?', () => {
+    const row = formatMoveLogRow({
+      kind: 'trace-target',
+      ordinal: 3,
+      sequence: 6,
+      turn: null,
+      target: 'PET',
+      cell: '-',
+      damageOut: 0,
+      damageIn: 0,
+      defBase: undefined,
+      defEffective: [],
+      hpBefore: undefined,
+      hpAfter: undefined,
+      healTotal: 0,
+      powerBefore: undefined,
+      powerAfter: undefined,
+      shieldAbsorbed: 0,
+    });
+
+    expect(row).toBe(
+      '#3 seq=6 turn=- [PET] CELL: - | DMG: out 0 in 0 | DEF: base ? eff ? | HP: ?->? (?, heal +0) | POW: ?->? (?) | SHIELD: 0'
+    );
+
+    // A zero DEF and a zero absorption are delivered values, not unknowns.
+    expect(
+      formatMoveLogRow({
+        kind: 'trace-target',
+        ordinal: 4,
+        sequence: 6,
+        turn: 6,
+        target: 'BOSS',
+        cell: '-',
+        damageOut: 0,
+        damageIn: 0,
+        defBase: 0,
+        defEffective: [0],
+        hpBefore: 500,
+        hpAfter: 500,
+        healTotal: 0,
+        powerBefore: 0,
+        powerAfter: 0,
+        shieldAbsorbed: 0,
+      })
+    ).toContain('DEF: base 0 eff 0 | HP: 500->500 (+0, heal +0)');
+  });
+
+  it('formats one DMG_CALC row per damage instance with the base and effective DEF used', () => {
+    expect(
+      formatMoveLogRow({
+        kind: 'trace-damage',
+        ordinal: 4,
+        sequence: 42,
+        turn: 3,
+        phase: 'attack',
+        source: 'player',
+        target: 'boss',
+        base: 100,
+        comboModifier: 1.2,
+        elementModifier: 1.5,
+        otherModifiers: 1,
+        mitigatedDamage: 68.57,
+        finalDamage: 68,
+        defenderDefBase: 50,
+        defenderDefEffective: 66,
+        shieldAbsorbed: 30,
+        hpBefore: 900,
+        hpAfter: 900,
+        hpLoss: 0,
+      })
+    ).toBe(
+      '#4 seq=42 turn=3 DMG_CALC kind=attack player->boss | base 100 * combo 1.2x * elem 1.5x * other 1x | def base 50 eff 66 -> mitigated 68.57 | final 68 | shield 30 | hp 900->900 (-0)'
+    );
+
+    // A real zero DEF is displayed explicitly, never replaced by a default.
+    expect(
+      formatMoveLogRow({
+        kind: 'trace-damage',
+        ordinal: 5,
+        sequence: 42,
+        turn: 3,
+        phase: 'statusTick',
+        source: 'boss',
+        target: 'player',
+        base: 7,
+        comboModifier: 1,
+        elementModifier: 1,
+        otherModifiers: 1,
+        mitigatedDamage: 7,
+        finalDamage: 7,
+        defenderDefBase: 0,
+        defenderDefEffective: 0,
+        shieldAbsorbed: 0,
+        hpBefore: 100,
+        hpAfter: 93,
+        hpLoss: 7,
+      })
+    ).toContain(
+      'DMG_CALC kind=statusTick boss->player | base 7 * combo 1x * elem 1x * other 1x | def base 0 eff 0 -> mitigated 7 | final 7 | shield 0 | hp 100->93 (-7)'
+    );
+  });
+
+  it('attributes cycles by their delivered actor, never by array position', () => {
+    // The Boss cycle is written first while its own `ordinal` is 2: array
+    // position says nothing about the side (`SIGNALR_PROTOCOL.md` §3.3.2 item 2).
+    const trace: CombatTrace = {
+      battleId: 'battle-321',
+      serverSequence: 7,
+      move: { kind: 'swap', fromCell: 27, toCell: 28 },
+      cycles: [
+        {
+          ordinal: 2,
+          actor: 'boss',
+          action: 'board',
+          fromCell: 40,
+          toCell: 41,
+          matchedGems: [{ gemType: 'HP', count: 3 }],
+          cascades: [{ depth: 1 }],
+        },
+        {
+          ordinal: 1,
+          actor: 'player',
+          action: 'board',
+          fromCell: 27,
+          toCell: 28,
+          matchedGems: [
+            { gemType: 'ATK', count: 6 },
+            { gemType: 'DEF', count: 3 },
+          ],
+          cascades: [{ depth: 1 }, { depth: 2 }],
+        },
+        {
+          ordinal: 3,
+          actor: 'player',
+          action: 'board',
+          fromCell: 0,
+          toCell: 8,
+          matchedGems: [{ gemType: 'POWER', count: 2 }],
+          cascades: [{ depth: 1 }],
+        },
+      ],
+      damage: [
+        {
+          ordinal: 2,
+          phase: 'attack',
+          cycleOrdinal: 2,
+          source: 'boss',
+          target: 'player',
+          base: 10,
+          comboModifier: 1,
+          elementModifier: 1,
+          otherModifiers: 1,
+          mitigatedDamage: 10,
+          finalDamage: 10,
+          defenderDefBase: 12,
+          defenderDefEffective: 12,
+          shieldAbsorbed: 0,
+          hpBefore: 1000,
+          hpAfter: 990,
+          hpLoss: 10,
+        },
+        {
+          ordinal: 1,
+          phase: 'attack',
+          cycleOrdinal: 1,
+          source: 'player',
+          target: 'boss',
+          base: 20,
+          comboModifier: 1,
+          elementModifier: 1,
+          otherModifiers: 1,
+          mitigatedDamage: 20,
+          finalDamage: 20,
+          defenderDefBase: 50,
+          defenderDefEffective: 66,
+          shieldAbsorbed: 0,
+          hpBefore: 900,
+          hpAfter: 880,
+          hpLoss: 20,
+        },
+      ],
+      healing: [],
+      pet: { hpBefore: 1000, hpAfter: 990, defBase: 12, powerBefore: 40, powerAfter: 46 },
+      boss: { hpBefore: 900, hpAfter: 880, defBase: 50, powerBefore: 3, powerAfter: 3 },
+    };
+
+    let ordinal = 0;
+    const rows = combatTraceMoveLogRows(trace, 7, 3, () => ++ordinal);
+
+    // PET then BOSS, then one row per damage instance in `ordinal` order.
+    expect(rows.map((row) => row.ordinal)).toEqual([1, 2, 3, 4]);
+    expect(rows.map((row) => row.kind)).toEqual([
+      'trace-target',
+      'trace-target',
+      'trace-damage',
+      'trace-damage',
+    ]);
+
+    const petRow = formatMoveLogRow(rows[0]);
+    const bossRow = formatMoveLogRow(rows[1]);
+
+    // Both player cycles, in ordinal order, belong to PET and to PET only.
+    expect(petRow).toContain(
+      'CELL: 27->28 (ATKx6,DEFx3) cascades 2; 0->8 (POWERx2) cascades 1'
+    );
+    expect(petRow).not.toContain('40->41');
+    expect(petRow).not.toContain('HPx3');
+    // The Boss cycle belongs to BOSS and to BOSS only.
+    expect(bossRow).toContain('CELL: 40->41 (HPx3) cascades 1');
+    expect(bossRow).not.toContain('27->28');
+    expect(bossRow).not.toContain('ATKx6');
+
+    // The sides' delivered roles are read from each damage instance, not position.
+    expect(petRow).toContain('DMG: out 20 in 10');
+    expect(bossRow).toContain('DMG: out 10 in 20');
+
+    // The damage rows are in `ordinal` order and each keeps its own DEF/final pair.
+    expect(formatMoveLogRow(rows[2])).toContain(
+      'DMG_CALC kind=attack player->boss |'
+    );
+    expect(formatMoveLogRow(rows[2])).toContain('def base 50 eff 66');
+    expect(formatMoveLogRow(rows[2])).toContain('final 20');
+    expect(formatMoveLogRow(rows[3])).toContain(
+      'DMG_CALC kind=attack boss->player |'
+    );
+    expect(formatMoveLogRow(rows[3])).toContain('def base 12 eff 12');
+    expect(formatMoveLogRow(rows[3])).toContain('final 10');
+  });
+
+  it('renders both sides target rows from the trace snapshots, in PET then BOSS order', () => {
+    const trace: CombatTrace = {
+      battleId: 'battle-321',
+      serverSequence: 8,
+      move: { kind: 'swap', fromCell: 27, toCell: 28 },
+      cycles: [
+        {
+          ordinal: 1,
+          actor: 'player',
+          action: 'board',
+          fromCell: 27,
+          toCell: 28,
+          matchedGems: [{ gemType: 'ATK', count: 3 }],
+          cascades: [{ depth: 1 }],
+        },
+      ],
+      damage: [],
+      healing: [],
+      pet: { hpBefore: 1000, hpAfter: 1000, defBase: 12, powerBefore: 40, powerAfter: 40 },
+      boss: { hpBefore: 5000, hpAfter: 5000, defBase: 50, powerBefore: 3, powerAfter: 3 },
+    };
+
+    let ordinal = 0;
+    const rows = combatTraceMoveLogRows(trace, 8, 2, () => ++ordinal);
+
+    // Both snapshots are mandatory trace members, so both sides have a row; a
+    // side with no recorded cycle shows `CELL: -` rather than losing its row.
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.kind)).toEqual(['trace-target', 'trace-target']);
+    expect(formatMoveLogRow(rows[0])).toContain('[PET] CELL: 27->28 (ATKx3) cascades 1');
+    expect(formatMoveLogRow(rows[1])).toContain('[BOSS] CELL: -');
+    expect(formatMoveLogRow(rows[1])).toContain('POW: 3->3 (+0)');
+  });
+
+  it('carries no hardcoded DEF constant and no DEF reverse-engineering in the client', () => {
+    // TASK-321: the Developer Move Log consumes the authoritative trace, so the
+    // former DEF constant / predicted DEF buff / DEF inverted from mitigated
+    // damage must not exist anywhere in the two files that build its rows.
+    const battleSceneSource = readFileSync(
+      resolve(__dirname, '../src/game/scenes/BattleScene.ts'),
+      'utf8'
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    for (const source of [presenterSource, battleSceneSource]) {
+      expect(source).not.toMatch(/previousBattleState/);
+      expect(source).not.toMatch(/\bpetDefBefore\b|\bbossBaseDef\b|\bpetDefBuff\b|\bbossDefBuff\b/);
+      expect(source).not.toMatch(/\bpreDefense\b/);
+      expect(source).not.toMatch(/\btargetDef\b/);
+      expect(source).not.toMatch(/\bK\s*=\s*100\b/);
+      expect(source).not.toMatch(/(?:def|Def)[A-Za-z]*\s*[:=]\s*(?:25|50)\b/);
+      expect(source).not.toMatch(/summaries\[[0-9]+\]/);
+    }
   });
 
   it('reuses the one event formatter and adds no second event vocabulary', () => {

@@ -37,7 +37,9 @@ public readonly record struct SwapExecutionResult
         IReadOnlyList<BattleEvent> events,
         ResourceGeneration? resources,
         bool isIdempotentReplay = false,
-        int? intermediatePetHp = null)
+        int? intermediatePetHp = null,
+        CombatTraceHeal? petHeal = null,
+        CombatTrace? combatTrace = null)
     {
         IsAccepted = isAccepted;
         Reason = reason;
@@ -47,6 +49,8 @@ public readonly record struct SwapExecutionResult
         _resources = resources;
         IsIdempotentReplay = isIdempotentReplay;
         IntermediatePetHp = intermediatePetHp;
+        PetHeal = petHeal;
+        CombatTrace = combatTrace;
     }
 
     private readonly BattleState? _state;
@@ -60,6 +64,34 @@ public readonly record struct SwapExecutionResult
     /// Present only for accepted Swap actions.
     /// </summary>
     public int? IntermediatePetHp { get; }
+
+    /// <summary>
+    /// The Pet heal this Swap's HP Gems applied, as an authoritative heal record
+    /// (<c>COMBAT_RULES.md</c> §4 item 7, <see cref="CombatTraceHeal"/>), or
+    /// <c>null</c> when the Swap generated no heal at all.
+    ///
+    /// <b>No Battle Event reports a heal</b> (<c>GAME_EVENTS.md</c> §2), so this
+    /// value is captured where the heal stage applied it and carried here for the
+    /// combat trace. A heal that restored 0 at full HP is still reported (with
+    /// its raw amount), so "healed for 0" stays distinguishable from "did not
+    /// heal" (<c>COMBAT_RULES.md</c> §4 item 7). The <see cref="CombatTraceHeal.Ordinal"/>
+    /// and <see cref="CombatTraceHeal.CycleOrdinal"/> are provisional here — the
+    /// Application stage that assembles the round's trace assigns the round-wide
+    /// order.
+    /// </summary>
+    public CombatTraceHeal? PetHeal { get; }
+
+    /// <summary>
+    /// Server-authoritative structured combat trace metadata for the completed
+    /// move (<c>SIGNALR_PROTOCOL.md</c> §3 item 5, §3.3), or <c>null</c> when no
+    /// trace was assembled.
+    ///
+    /// It is attached by the Application stage that owns the <c>GAME_RULES.md</c>
+    /// §17 sequence, because the trace spans stages that stage orders (the boss
+    /// response and the step-19a ticks) and not only the board resolution this
+    /// type owns. It is never read by gameplay and never serialized from Domain.
+    /// </summary>
+    public CombatTrace? CombatTrace { get; }
 
     /// <summary>
     /// True when this result is an idempotent response to a previously committed action (ADR-025).
@@ -230,7 +262,7 @@ public readonly record struct SwapExecutionResult
 
         // Every other member is carried across unchanged: this replaces the event
         // list and nothing else.
-        return new SwapExecutionResult(true, Reason, _state, _resolution, events, _resources!.Value, isIdempotentReplay: IsIdempotentReplay, intermediatePetHp: IntermediatePetHp);
+        return new SwapExecutionResult(true, Reason, _state, _resolution, events, _resources!.Value, isIdempotentReplay: IsIdempotentReplay, intermediatePetHp: IntermediatePetHp, petHeal: PetHeal, combatTrace: CombatTrace);
     }
 
     /// <summary>
@@ -270,7 +302,26 @@ public readonly record struct SwapExecutionResult
                 + "(MATCH3_RULES.md §2.1.5).");
         }
 
-        return new SwapExecutionResult(true, Reason, state, _resolution, _events ?? [], _resources!.Value, isIdempotentReplay: IsIdempotentReplay, intermediatePetHp: IntermediatePetHp);
+        return new SwapExecutionResult(true, Reason, state, _resolution, _events ?? [], _resources!.Value, isIdempotentReplay: IsIdempotentReplay, intermediatePetHp: IntermediatePetHp, petHeal: PetHeal, combatTrace: CombatTrace);
+    }
+
+    /// <summary>
+    /// Attaches authoritative move combat trace telemetry to the result.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The Swap was rejected; a rejected action carries no state, no resources,
+    /// and no trace.
+    /// </exception>
+    public SwapExecutionResult WithCombatTrace(CombatTrace combatTrace)
+    {
+        if (!IsAccepted)
+        {
+            throw new InvalidOperationException(
+                "A rejected Swap produces no combat trace: a rejected action writes "
+                + "nothing and emits nothing (MATCH3_RULES.md §2.1.5).");
+        }
+
+        return new SwapExecutionResult(true, Reason, _state, _resolution, _events ?? [], _resources!.Value, isIdempotentReplay: IsIdempotentReplay, intermediatePetHp: IntermediatePetHp, petHeal: PetHeal, combatTrace: combatTrace);
     }
 
     /// <summary>
@@ -308,8 +359,10 @@ public readonly record struct SwapExecutionResult
         CascadeResolver.CascadeResult resolution,
         IReadOnlyList<BattleEvent> events,
         ResourceGeneration resources,
-        int? intermediatePetHp = null) =>
-        new(true, SwapRejectionReason.None, state, resolution, events, resources, intermediatePetHp: intermediatePetHp);
+        int? intermediatePetHp = null,
+        CombatTraceHeal? petHeal = null,
+        CombatTrace? combatTrace = null) =>
+        new(true, SwapRejectionReason.None, state, resolution, events, resources, intermediatePetHp: intermediatePetHp, petHeal: petHeal, combatTrace: combatTrace);
 }
 
 /// <summary>
@@ -484,7 +537,25 @@ public static class SwapExecutor
         // Player's DEF Gems grant the PET the temporary "DefenseBuff" instance
         // (TASK-299) — never a Shield — and the HP Gems heal the Pet.
         var generation = ResourceGenerator.Generate(resolution);
+
+        // COMBAT_RULES.md §4 item 7 / SIGNALR_PROTOCOL.md §3.3: no Battle Event
+        // reports a heal, so the authoritative record is captured here, at the one
+        // place this Swap applies it. `petState.HP - hpBeforeHeal` is exactly the HP
+        // the heal restored (after modifiers and the MaxHP clamp); a heal at full HP
+        // yields 0 with the raw pool still reported, so "healed for 0" is not
+        // confused with "no heal". Nothing is re-derived and no second heal is run.
+        var hpBeforeHeal = state.PetState.HP;
         var petState = ResourceGenerator.ApplyHeal(state.PetState, generation, state.BossState.ActiveStatusEffects);
+        var petHeal = generation.HealPool > 0
+            ? new CombatTraceHeal(
+                Ordinal: 1,
+                CycleOrdinal: 1,
+                Target: DamageParty.Player,
+                Amount: petState.HP - hpBeforeHeal,
+                RawAmount: generation.HealPool,
+                HpBefore: hpBeforeHeal,
+                HpAfter: petState.HP)
+            : (CombatTraceHeal?)null;
         petState = ResourceGenerator.ApplyDefenseBuff(petState, generation);
 
         // Step 7 (GAME_EVENTS.md §1, §1.1, §2): the ordered Battle Events that
@@ -569,7 +640,7 @@ public static class SwapExecutor
             LastCommittedSwapPair = CommittedSwapPair.FromCells(request.From, request.To, state.Sequence + 1, request.ActionId),
         };
 
-        return SwapExecutionResult.Committed(resolved, resolution, events, generation, intermediatePetHp: petState.HP);
+        return SwapExecutionResult.Committed(resolved, resolution, events, generation, intermediatePetHp: petState.HP, petHeal: petHeal);
     }
 
     /// <summary>

@@ -20,6 +20,7 @@ import {
   RUNTIME_ACTION_PET_SKILL_CAST,
   RuntimeActionNotImplementedError,
   RuntimeActionOutcomeUnknownError,
+  readCombatTrace,
   type BattleEventsEnvelope,
   type BattleEventsListener,
   type BattleStateListener,
@@ -2144,11 +2145,23 @@ export class GameRuntime implements GameRuntimePort {
         ? candidate.intermediatePetHp
         : null;
 
+    // The optional `combatTrace` is parsed here because this method rebuilds the
+    // envelope: an unlisted member would otherwise be dropped and never reach the
+    // Developer Move Log (`SIGNALR_PROTOCOL.md` §3 item 5, §3.3). A trace that is
+    // malformed or whose own `battleId`/`serverSequence` do not repeat the
+    // envelope's is treated as absent for this delivery — only the trace is
+    // dropped, never the batch itself (§3.3.2 item 2).
+    const combatTrace =
+      candidate.combatTrace === undefined || candidate.combatTrace === null
+        ? null
+        : readCombatTrace(candidate.combatTrace, candidate.battleId, candidate.serverSequence);
+
     return {
       battleId: candidate.battleId,
       serverSequence: candidate.serverSequence,
       events: candidate.events,
       ...(intermediatePetHp !== null ? { intermediatePetHp } : {}),
+      ...(combatTrace !== null ? { combatTrace } : {}),
     };
   }
 

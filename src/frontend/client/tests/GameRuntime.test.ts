@@ -747,6 +747,205 @@ describe('GameRuntime', () => {
     });
   });
 
+  describe('combatTrace envelope parsing and forwarding', () => {
+    /** One canonical trace, as SIGNALR_PROTOCOL.md §3.3's example writes it. */
+    const TRACE = {
+      battleId: 'battle-321',
+      serverSequence: 42,
+      move: { kind: 'swap', fromCell: 27, toCell: 28 },
+      cycles: [
+        {
+          ordinal: 1,
+          actor: 'player',
+          action: 'board',
+          fromCell: 27,
+          toCell: 28,
+          matchedGems: [
+            { gemType: 'ATK', count: 6 },
+            { gemType: 'DEF', count: 3 },
+          ],
+          cascades: [{ depth: 1 }, { depth: 2 }],
+        },
+        {
+          ordinal: 2,
+          actor: 'boss',
+          action: 'board',
+          fromCell: 40,
+          toCell: 41,
+          matchedGems: [{ gemType: 'HP', count: 3 }],
+          cascades: [{ depth: 1 }],
+        },
+      ],
+      damage: [
+        {
+          ordinal: 1,
+          phase: 'attack',
+          cycleOrdinal: 1,
+          source: 'player',
+          target: 'boss',
+          base: 30,
+          comboModifier: 1,
+          elementModifier: 1,
+          otherModifiers: 1,
+          mitigatedDamage: 20,
+          finalDamage: 20,
+          defenderDefBase: 50,
+          defenderDefEffective: 66,
+          shieldAbsorbed: 0,
+          hpBefore: 900,
+          hpAfter: 880,
+          hpLoss: 20,
+        },
+      ],
+      healing: [
+        {
+          ordinal: 1,
+          cycleOrdinal: 1,
+          target: 'player',
+          amount: 0,
+          rawAmount: 15,
+          hpBefore: 100,
+          hpAfter: 100,
+        },
+      ],
+      pet: { hpBefore: 100, hpAfter: 80, defBase: 25, powerBefore: 40, powerAfter: 46 },
+      boss: { hpBefore: 900, hpAfter: 880, defBase: 50, powerBefore: 3, powerAfter: 3 },
+    };
+
+    /** Emits one `ReceiveEvents` batch the way the hub delivers it. */
+    function emitBatch(
+      transport: ReturnType<typeof createRuntime>['transport'],
+      trace: unknown,
+      overrides: { readonly battleId?: string; readonly serverSequence?: number } = {}
+    ): void {
+      transport.emit('ReceiveEvents', {
+        battleId: overrides.battleId ?? 'battle-321',
+        serverSequence: overrides.serverSequence ?? 42,
+        events: [{ type: 'SwapStarted', actor: 'player', fromCell: 27, toCell: 28 }],
+        ...(trace === undefined ? {} : { combatTrace: trace }),
+      });
+    }
+
+    it('forwards a valid trace with every array and member intact', async () => {
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const received: BattleEventsEnvelope[] = [];
+      runtime.onBattleEvents((envelope) => received.push(envelope));
+
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-321', sequence: 42 }));
+      emitBatch(transport, TRACE);
+
+      expect(received).toHaveLength(1);
+      const trace = received[0].combatTrace;
+      expect(trace).toEqual(TRACE);
+      expect(trace?.cycles).toHaveLength(2);
+      expect(trace?.cycles[0].matchedGems).toEqual([
+        { gemType: 'ATK', count: 6 },
+        { gemType: 'DEF', count: 3 },
+      ]);
+      expect(trace?.cycles[0].cascades).toEqual([{ depth: 1 }, { depth: 2 }]);
+      expect(trace?.damage[0].defenderDefBase).toBe(50);
+      expect(trace?.damage[0].defenderDefEffective).toBe(66);
+      expect(trace?.healing[0].amount).toBe(0);
+      expect(trace?.pet).toEqual(TRACE.pet);
+      expect(trace?.boss).toEqual(TRACE.boss);
+    });
+
+    it('drops only a malformed trace and still delivers the batch', async () => {
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const received: BattleEventsEnvelope[] = [];
+      runtime.onBattleEvents((envelope) => received.push(envelope));
+
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-321', sequence: 42 }));
+
+      const malformed: readonly unknown[] = [
+        'not-an-object',
+        { ...TRACE, move: 'swap' },
+        { ...TRACE, move: { kind: 'card', fromCell: 1, toCell: 2 } },
+        { ...TRACE, cycles: 'not-an-array' },
+        { ...TRACE, cycles: [{ ...TRACE.cycles[0], actor: 'nobody' }] },
+        { ...TRACE, cycles: [{ ...TRACE.cycles[0], matchedGems: [{ gemType: 'GOLD', count: 1 }] }] },
+        { ...TRACE, damage: [{ ...TRACE.damage[0], finalDamage: 'twenty' }] },
+        { ...TRACE, damage: [{ ...TRACE.damage[0], target: 'nobody' }] },
+        { ...TRACE, healing: [{ ...TRACE.healing[0], amount: Number.NaN }] },
+        { ...TRACE, pet: 3 },
+      ];
+
+      for (const trace of malformed) {
+        emitBatch(transport, trace);
+      }
+
+      // Every batch was forwarded; only its trace was withheld.
+      expect(received).toHaveLength(malformed.length);
+      for (const envelope of received) {
+        expect(envelope.events).toEqual([
+          { type: 'SwapStarted', actor: 'player', fromCell: 27, toCell: 28 },
+        ]);
+        expect('combatTrace' in envelope).toBe(false);
+      }
+    });
+
+    it("drops a trace whose battleId or serverSequence does not equal the envelope's", async () => {
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const received: BattleEventsEnvelope[] = [];
+      runtime.onBattleEvents((envelope) => received.push(envelope));
+
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-321', sequence: 42 }));
+
+      emitBatch(transport, { ...TRACE, battleId: 'battle-other' });
+      emitBatch(transport, { ...TRACE, serverSequence: 41 });
+
+      expect(received).toHaveLength(2);
+      expect(received[0].combatTrace).toBeUndefined();
+      expect(received[1].combatTrace).toBeUndefined();
+      // The batch itself is never mixed with another move's trace.
+      expect(received[0].events).toHaveLength(1);
+      expect(received[1].events).toHaveLength(1);
+    });
+
+    it('carries no combatTrace member when the delivery has none', async () => {
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const received: BattleEventsEnvelope[] = [];
+      runtime.onBattleEvents((envelope) => received.push(envelope));
+
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-321', sequence: 42 }));
+      emitBatch(transport, undefined);
+
+      expect(received).toHaveLength(1);
+      expect('combatTrace' in received[0]).toBe(false);
+    });
+
+    it('forwards a trace whose snapshot omits a member so it renders as unknown', async () => {
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const received: BattleEventsEnvelope[] = [];
+      runtime.onBattleEvents((envelope) => received.push(envelope));
+
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-321', sequence: 42 }));
+      emitBatch(transport, {
+        ...TRACE,
+        boss: { hpBefore: 900, hpAfter: 880, defBase: 50 },
+      });
+
+      // A member the delivery does not carry is not invented and does not make
+      // the trace malformed; the presenter renders it as `?` (§3.3.2 item 7).
+      expect(received[0].combatTrace?.boss).toEqual({
+        hpBefore: 900,
+        hpAfter: 880,
+        defBase: 50,
+      });
+      expect(received[0].combatTrace?.boss.powerBefore).toBeUndefined();
+    });
+  });
+
   describe('subscriptions', () => {
     it('unsubscribes runtime listeners', async () => {
       const { runtime } = createRuntime();
