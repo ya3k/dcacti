@@ -1,6 +1,6 @@
 # SignalR Protocol
 
-**Version:** 2.31 (§3 item 5 and **§3.3 added** per **TASK-321**: the `ReceiveEvents` envelope gains an optional `combatTrace` member carrying the authoritative per-move combat telemetry of a committed Swap — move identity, ordered actor cycles with matched-Gem counts and cascade depths, every damage instance with its target, the base and effective DEF actually used, shield absorption, actual HP loss, healing, and Pet/Boss before/after snapshots. It is additive and backward-compatible: the member is omitted (`WhenWritingNull`) for `CardCast`, `PetSkillCast`, and replays, it introduces no Battle Event, hub method, argument, subscription, or state member, the §3.2.2 discriminator set and every existing event schema are unchanged, and no gameplay value or formula changes. §3, §3.1, §3.2's envelope description, and the `ReceiveEvents` signature are reconciled to the new optional member). Prior 2.30: (§3.2.2 and §3.2.30 updated and **§3.2.18 RETIRED IN PLACE** per **TASK-313 / ADR-029 Slice 5** (OD-311-2 = A): the `BossSkillCast` discriminator is removed from the closed set and its DTO — including the `skillId` member — no longer exists, while the section number is retained with a retirement note so existing cross-references stay valid and no section is renumbered; `BossCardCast` (§3.2.30) is the sole Boss cast event and its schema is unchanged; §3.2.25, §3.2.29, §4.4 and §8 item 10 are reconciled with the removal, and the breaking-deploy active-battle drain prerequisite is recorded as a required but unexecuted operational step). Prior 2.29: (§3.2.18 annotated with Slice 5 removal expectations, §3.2.30 item 8 gate terminology reconciled to the Slice 5 removal gate per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; wire contracts and schemas unchanged). Prior 2.28: (§3.2.2, **§3.2.30 added**, and §4.4 extended per **ADR-029 /
+**Version:** 2.34 (§3.3.1 heal `cycleOrdinal` made *representable* per **TASK-324**: TASK-322 stated the not-applicable omission for `healing[].cycleOrdinal` but the transport could not produce it — `CombatTraceHeal.CycleOrdinal` and `CombatTraceHealWireDto.CycleOrdinal` were non-nullable `int`, so a heal belonging to no actor cycle was written as `0`, a value the §3.3.1 presence rule and §3.3.2 item 7 forbid. Per operator decision **OD-322-1 option A** (recorded in this session; see `.ai/PROJECT_STATE.md` §3), both members are now `int?` and the omission is written as an absent member, never `null` and never `0`. `BOSS_RULES.md` §6.2.3's regeneration — the first producer that belongs to no actor cycle — is now reported in `healing[]`. The payload shape of a `cycleOrdinal`-bearing heal is unchanged; a consumer that reads the member as an optional integer (as this section already required) is unaffected. Prior 2.33: (§3.3 example corrected per **TASK-323**: the §3.3 fenced JSON example — the only worked example of the payload — showed both of its board cycles with `"cardId": null`, contradicting §3.3.1's Cycle object table, §3.3.2 item 7 and §3.2.5, all of which require a member not applicable to its entry to be **omitted** from the JSON and never written as `null`; an implementer copying the example would have emitted a shape the contract forbids. The `cardId` member is now removed from those two `action = "board"` cycle objects and nothing else in the example changed. No schema, member, presence or optionality decision, event, discriminator, hub method, argument, subscription, delivery path, state, or implementation changes, and the example's `cardId` typing is unchanged for card cycles). Prior 2.32: (§3.3.1 reconciled per **TASK-322**: the `combatTrace` presence statements of §3.3.1 and the rule §3.3.2 item 7 already states were mutually inconsistent for `healing[].cycleOrdinal` — §3.3.1 marked it `always` while item 7's closed list of *not-applicable* omissions is enforced by §3.2.5 and did not include it, leaving a client to answer both "reject the trace as malformed" and "render it as absent". The member is now stated, in §3.3.1 itself, as the fourth not-applicable omission on exactly the terms §3.3.2 item 7 already gave the other three; a short presence rule under §3.3.1's tables says so and repeats item 7's real-`0`-is-written rule. No schema, member, optionality decision, event, discriminator, hub method, argument, subscription, delivery path, or state changes, and the §3.3 example is unchanged). Prior 2.31: (§3 item 5 and **§3.3 added** per **TASK-321**: the `ReceiveEvents` envelope gains an optional `combatTrace` member carrying the authoritative per-move combat telemetry of a committed Swap — move identity, ordered actor cycles with matched-Gem counts and cascade depths, every damage instance with its target, the base and effective DEF actually used, shield absorption, actual HP loss, healing, and Pet/Boss before/after snapshots. It is additive and backward-compatible: the member is omitted (`WhenWritingNull`) for `CardCast`, `PetSkillCast`, and replays, it introduces no Battle Event, hub method, argument, subscription, or state member, the §3.2.2 discriminator set and every existing event schema are unchanged, and no gameplay value or formula changes. §3, §3.1, §3.2's envelope description, and the `ReceiveEvents` signature are reconciled to the new optional member). Prior 2.30: (§3.2.2 and §3.2.30 updated and **§3.2.18 RETIRED IN PLACE** per **TASK-313 / ADR-029 Slice 5** (OD-311-2 = A): the `BossSkillCast` discriminator is removed from the closed set and its DTO — including the `skillId` member — no longer exists, while the section number is retained with a retirement note so existing cross-references stay valid and no section is renumbered; `BossCardCast` (§3.2.30) is the sole Boss cast event and its schema is unchanged; §3.2.25, §3.2.29, §4.4 and §8 item 10 are reconciled with the removal, and the breaking-deploy active-battle drain prerequisite is recorded as a required but unexecuted operational step). Prior 2.29: (§3.2.18 annotated with Slice 5 removal expectations, §3.2.30 item 8 gate terminology reconciled to the Slice 5 removal gate per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; wire contracts and schemas unchanged). Prior 2.28: (§3.2.2, **§3.2.30 added**, and §4.4 extended per **ADR-029 /
 TASK-303**, applying the explicit Product Owner decision that the Boss is a
 genuine opponent using the same cast principles as the Player: `BossCardCast`
 becomes the twenty-first member of the closed discriminator set — a dedicated
@@ -1860,7 +1860,6 @@ Frontend                Developer Move Log
             "action": "board",
             "fromCell": 27,
             "toCell": 28,
-            "cardId": null,
             "matchedGems": [ { "gemType": "ATK", "count": 6 }, { "gemType": "DEF", "count": 3 } ],
             "cascades": [ { "depth": 1 }, { "depth": 2 } ]
         },
@@ -1870,7 +1869,6 @@ Frontend                Developer Move Log
             "action": "board",
             "fromCell": 40,
             "toCell": 41,
-            "cardId": null,
             "matchedGems": [ { "gemType": "HP", "count": 3 } ],
             "cascades": [ { "depth": 1 } ]
         }
@@ -1962,7 +1960,7 @@ Frontend                Developer Move Log
 | Member | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `ordinal` | int | always | 1-based order within the batch |
-| `cycleOrdinal` | int | always | the cycle whose action produced the heal |
+| `cycleOrdinal` | int | omitted when the heal belongs to no actor cycle | the cycle whose action produced the heal — a *not-applicable* omission per §3.2.5 (§3.3.2 item 7) |
 | `target` | string | always | `"player"` or `"boss"` |
 | `amount` | int | always | HP actually restored after modifiers and the MaxHP clamp; `0` at full HP |
 | `rawAmount` | int | always | the raw Heal Pool the heal was resolved from |
@@ -1975,6 +1973,16 @@ Frontend                Developer Move Log
 | `hpBefore` / `hpAfter` | int | always | HP before the move and after the committed write-back |
 | `defBase` | int | always | the stored base DEF (the stat is never rewritten by a buff, `COMBAT_RULES.md` §5.4.4) |
 | `powerBefore` / `powerAfter` | int | always | Power before the move and after the committed write-back |
+
+**Presence rule.** The `Presence` column and §3.3.2 item 7 state the same rule
+and must not be read against each other. A member marked *omitted* above is a
+**not-applicable** omission: it is absent from the JSON entirely and is never
+written as `null` (§3.2.5), and a value it would carry does not exist for that
+entry. Every other member is mandatory, and its presence includes a real `0` — a
+zero DEF, a zero heal, a zero absorption, and a zero HP delta are values, never
+stand-ins for "unknown". A consumer renders a member it did not receive as its
+established unknown representation (`?`, §3.3.2 item 7) and never substitutes
+a default, a state-push value, or a reconstructed number.
 
 ### 3.3.2 Rules
 
@@ -2012,8 +2020,10 @@ Frontend                Developer Move Log
    captured from authoritative values, so a `0` DEF or a `0` heal is a real
    value, never a stand-in for "unknown". No member of this payload is
    optional except `fromCell`/`toCell` on a board cycle, `cardId` on a card
-   cycle, and `cycleOrdinal` on a status tick — all of which are
-   *not-applicable* omissions per §3.2.5. A consumer renders an unavailable
+   cycle, `cycleOrdinal` on a status tick, and `cycleOrdinal` on a heal that
+   belongs to no actor cycle — all of which are *not-applicable* omissions per
+   §3.2.5, stated member by member in §3.3.1 and omitted from the JSON rather
+   than written as `null`. A consumer renders an unavailable
    value as its established unknown representation (`?`) and must not
    substitute a default, a state-push value, or a reconstructed number.
 8. **No second calculation and no logging mutation.** The values are read
@@ -3267,3 +3277,21 @@ is the answer to the gap it opened.
     (`REDIS_STATE.md` §2.1 item 7, which states the procedure). This document
     records the operational requirement; it does **not** claim that the drain or
     the deployment has happened, and neither is verified here.
+
+    **TASK-322 changed no wire behaviour and therefore amends no subscription
+    of this policy.** Reconciling §3.3.1's presence statement with §3.3.2
+    item 7 states a member-presence rule that already held — no member, no
+    optionality decision, no feature set, and no payload shape changed — so it
+    requires no drain, no coordinated deploy, and no wire version change; the
+    deployed server and client remain interoperable either side of it, exactly
+    as §3.3.2 item 10 states.
+
+    **TASK-324 changes no serialized shape either.** Making
+    `healing[].cycleOrdinal` nullable only changes a member's *type* in the
+    producing implementation; it adds no member, removes no member, and changes
+    no member's required presence. A heal that names a cycle serializes exactly
+    as before (`"cycleOrdinal": <int>`), and the newly reachable not-applicable
+    omission is a member the rule already said would be *absent*. A client that
+    followed §3.3.2 item 7 already reads the member as optional, so deployed
+    clients and servers remain interoperable either side of it: no drain, no
+    coordinated deploy, and no wire version change.

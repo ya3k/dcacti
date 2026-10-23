@@ -155,7 +155,12 @@ export interface CombatTraceDamage {
 /** One heal the round applied, including one that restored 0 at full HP (§3.3.1). */
 export interface CombatTraceHealing {
   readonly ordinal: number;
-  readonly cycleOrdinal: number;
+  /**
+   * The owning cycle's ordinal; omitted when the heal belongs to no actor cycle
+   * (§3.3.1, §3.3.2 item 7). An unreceived member stays `undefined` — it is never
+   * defaulted, and never filled from a `0` the contract would not write.
+   */
+  readonly cycleOrdinal?: number;
   readonly target: CombatTraceParty;
   /** HP actually restored after modifiers and the MaxHP clamp; `0` at full HP. */
   readonly amount: number;
@@ -1198,9 +1203,12 @@ function readCombatTraceHealing(value: unknown): CombatTraceHealing | null {
 
   const candidate = value as Record<string, unknown>;
   const target = combatTraceParty(candidate.target);
+  // A heal that belongs to no actor cycle omits the member (§3.3.1 presence rule,
+  // §3.3.2 item 7); one that is present must be a finite number, and no value is
+  // invented for an absent one.
+  const cycleOrdinal = readOptionalNumber(candidate, 'cycleOrdinal');
   const numericMembers = {
     ordinal: readFiniteNumber(candidate.ordinal),
-    cycleOrdinal: readFiniteNumber(candidate.cycleOrdinal),
     amount: readFiniteNumber(candidate.amount),
     rawAmount: readFiniteNumber(candidate.rawAmount),
     hpBefore: readFiniteNumber(candidate.hpBefore),
@@ -1209,6 +1217,7 @@ function readCombatTraceHealing(value: unknown): CombatTraceHealing | null {
 
   if (
     target === null ||
+    cycleOrdinal === null ||
     Object.values(numericMembers).some((member) => member === undefined)
   ) {
     return null;
@@ -1216,7 +1225,7 @@ function readCombatTraceHealing(value: unknown): CombatTraceHealing | null {
 
   return {
     ordinal: numericMembers.ordinal as number,
-    cycleOrdinal: numericMembers.cycleOrdinal as number,
+    ...(cycleOrdinal !== undefined ? { cycleOrdinal } : {}),
     target,
     amount: numericMembers.amount as number,
     rawAmount: numericMembers.rawAmount as number,

@@ -19,8 +19,9 @@ using GameServer.Domain.Match3;
 /// explicitly, so every member is named; `§3.2.5` requires a not-applicable
 /// member to be omitted rather than written as `null`, so the optional members
 /// (a board cycle's `fromCell`/`toCell`, a card cycle's `cardId`, a status tick's
-/// `cycleOrdinal`) use `WhenWritingNull`. A real zero — a zero DEF, a zero heal,
-/// a zero absorption — is a value and is always written.
+/// `cycleOrdinal`, a heal that belongs to no actor cycle's `cycleOrdinal`) use
+/// `WhenWritingNull`. A real zero — a zero DEF, a zero heal, a zero absorption —
+/// is a value and is always written.
 /// </summary>
 internal static class CombatTraceWireProjection
 {
@@ -261,7 +262,10 @@ public record CombatTraceDamageWireDto(
 
 /// <summary>One heal's wire shape (`§3.3.1`).</summary>
 /// <param name="Ordinal">1-based order within the round.</param>
-/// <param name="CycleOrdinal">The owning cycle's ordinal.</param>
+/// <param name="CycleOrdinal">
+/// The owning cycle's ordinal; omitted when the heal belongs to no actor cycle
+/// (`§3.3.1`, `§3.3.2` item 7) — the not-applicable omission `§3.2.5` requires.
+/// </param>
 /// <param name="Target">`"player"` or `"boss"`.</param>
 /// <param name="Amount">HP actually restored; 0 at full HP.</param>
 /// <param name="RawAmount">The raw Heal Pool.</param>
@@ -269,7 +273,8 @@ public record CombatTraceDamageWireDto(
 /// <param name="HpAfter">The target's HP after the heal.</param>
 public record CombatTraceHealWireDto(
     [property: JsonPropertyName("ordinal")] int Ordinal,
-    [property: JsonPropertyName("cycleOrdinal")] int CycleOrdinal,
+    [property: JsonPropertyName("cycleOrdinal")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? CycleOrdinal,
     [property: JsonPropertyName("target")] string Target,
     [property: JsonPropertyName("amount")] int Amount,
     [property: JsonPropertyName("rawAmount")] int RawAmount,

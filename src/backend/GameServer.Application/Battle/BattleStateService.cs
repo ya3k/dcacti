@@ -2238,10 +2238,30 @@ public sealed class BattleStateService
                     // BOSS_RULES.md §6.2.3: heals 5% MaxHP per trigger, truncated toward zero, clamped to MaxHP.
                     var regenPerTrigger = (bossState.MaxHP * 5) / 100;
                     var totalRegen = regenPerTrigger * bossPassive.Triggers.Count;
+
+                    // TASK-324 / SIGNALR_PROTOCOL.md §3.3: the regeneration is a heal the
+                    // Round applied, so `healing[]` reports it. It is recorded exactly once
+                    // here — the one place this Passive writes Boss HP — from the amount the
+                    // clamp actually restored, so a full-HP trigger is a zero-amount heal
+                    // rather than "no heal" (§3.3.2 item 6) and is never double-recorded.
+                    //
+                    // It names NO actor cycle: §3.3 item 1 applies this Passive once per
+                    // player action, outside any cycle's action, so its cycleOrdinal is the
+                    // not-applicable omission of §3.3.1/§3.3.2 item 7 (null, never 0).
+                    var bossHpBeforeRegen = bossState.HP;
                     bossState = bossState with
                     {
                         HP = Math.Min(bossState.HP + totalRegen, bossState.MaxHP),
                     };
+
+                    traceHeals.Add(new CombatTraceHeal(
+                        Ordinal: ++traceHealOrdinal,
+                        CycleOrdinal: null,
+                        Target: DamageParty.Boss,
+                        Amount: bossState.HP - bossHpBeforeRegen,
+                        RawAmount: totalRegen,
+                        HpBefore: bossHpBeforeRegen,
+                        HpAfter: bossState.HP));
                 }
             }
         }

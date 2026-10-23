@@ -431,6 +431,310 @@ public class CombatTraceWireTests : IClassFixture<CombatTraceWireTests.CombatTra
     }
 
     // =======================================================================
+    // 4. TASK-322 — the not-applicable omission rule, both directions
+    // =======================================================================
+
+    /// <summary>
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.3.1's presence rule and §3.3.2 item 7: an
+    /// omitted member is a *not-applicable* omission — absent from the JSON, never
+    /// written as <c>null</c> — while a value the entry really carries is written.
+    ///
+    /// <b>The two directions are asserted in one place on purpose.</b> The defect
+    /// TASK-322 corrects is a presence statement that made a member simultaneously
+    /// mandatory and omittable, so a test that could only show one direction would
+    /// not pin the rule. A status tick belongs to no actor cycle, so its
+    /// <c>cycleOrdinal</c> is omitted; the attack instance in the same array names
+    /// its cycle and is written.
+    /// </summary>
+    [Fact]
+    public void CombatTraceWireDto_DamageCycleOrdinal_ShouldBeOmittedForAStatusTickAndWrittenForAnAttack()
+    {
+        var trace = new CombatTraceWireDto(
+            BattleId: "battle-cycle-ordinal",
+            ServerSequence: 9,
+            Move: new CombatTraceMoveWireDto(Kind: "swap", FromCell: 9, ToCell: 10),
+            Cycles:
+            [
+                new CombatTraceCycleWireDto(
+                    Ordinal: 1,
+                    Actor: "player",
+                    Action: "board",
+                    FromCell: 9,
+                    ToCell: 10,
+                    CardId: null,
+                    MatchedGems: [new CombatTraceGemWireDto(GemType: "ATK", Count: 3)],
+                    Cascades: [new CombatTraceCascadeWireDto(Depth: 1)]),
+            ],
+            Damage:
+            [
+                AttackInstance(ordinal: 1, cycleOrdinal: 1),
+                StatusTickInstance(ordinal: 2),
+            ],
+            Healing: [],
+            Pet: new CombatTraceTargetWireDto(
+                HpBefore: 100, HpAfter: 60, DefBase: 25, PowerBefore: 0, PowerAfter: 0),
+            Boss: new CombatTraceTargetWireDto(
+                HpBefore: 900, HpAfter: 880, DefBase: 50, PowerBefore: 0, PowerAfter: 0));
+
+        var json = JsonSerializer.Serialize(trace);
+        using var document = JsonDocument.Parse(json);
+        var damage = document.RootElement.GetProperty("damage");
+
+        // The attack instance names the cycle that produced it: the member is
+        // present and carries the actual ordinal (0 is a real value, so it is
+        // present too — this is not an omission).
+        var attack = damage[0];
+        Assert.True(attack.TryGetProperty("cycleOrdinal", out var attackCycle));
+        Assert.Equal(1, attackCycle.GetInt32());
+        Assert.Equal("attack", attack.GetProperty("phase").GetString());
+
+        // The status tick belongs to no cycle: omitted entirely, and never null.
+        var tick = damage[1];
+        Assert.False(
+            tick.TryGetProperty("cycleOrdinal", out _),
+            "a status tick belongs to no actor cycle, so cycleOrdinal is a not-applicable omission (§3.3.1, §3.2.5)");
+        Assert.Equal("statusTick", tick.GetProperty("phase").GetString());
+
+        // No member of the payload is written as null anywhere, in either array.
+        Assert.DoesNotContain("null", json, StringComparison.Ordinal);
+
+        // An absent member stays absent across a wire round trip, and the written
+        // one stays written (the omission is not a serializer artifact).
+        var roundTripped = JsonSerializer.Deserialize<CombatTraceWireDto>(json);
+        Assert.NotNull(roundTripped);
+        Assert.Equal(1, roundTripped!.Damage[0].CycleOrdinal);
+        Assert.Null(roundTripped.Damage[1].CycleOrdinal);
+        Assert.Equal("attack", roundTripped.Damage[0].Phase);
+        Assert.Equal("statusTick", roundTripped.Damage[1].Phase);
+    }
+
+    /// <summary>
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.3.1's Heal object: <c>cycleOrdinal</c> is a
+    /// not-applicable omission when the heal belongs to no actor cycle, while a
+    /// heal that restored <c>0</c> at full HP is still applicable — it names its
+    /// cycle and its <c>amount</c> is written as a real zero.
+    ///
+    /// <b>Both halves are asserted on the serialized wire.</b> The rule is only
+    /// realized if the transport can produce it: a heal naming a cycle writes the
+    /// numeric ordinal, and a heal that belongs to no actor cycle omits the member
+    /// entirely — it is not written as <c>null</c> and not as the <c>0</c> sentinel
+    /// that would name no cycle while still being written (OD-322-1, as resolved by
+    /// TASK-324). A DTO or serializer change that reintroduced either substitute
+    /// fails here.
+    /// </summary>
+    [Fact]
+    public void CombatTraceWireDto_HealCycleOrdinal_ShouldBeOmittedWhenTheHealBelongsToNoCycle()
+    {
+        // The documented §3.3.1 payload: an applicable heal, and a heal that
+        // belongs to no actor cycle (its cycleOrdinal absent).
+        const string documentedJson = """
+            {
+                "battleId": "battle-heal-cycle-ordinal",
+                "serverSequence": 3,
+                "move": { "kind": "swap", "fromCell": 0, "toCell": 1 },
+                "cycles": [],
+                "damage": [],
+                "healing": [
+                    { "ordinal": 1, "cycleOrdinal": 1, "target": "player", "amount": 0, "rawAmount": 15, "hpBefore": 100, "hpAfter": 100 },
+                    { "ordinal": 2, "target": "boss", "amount": 12, "rawAmount": 12, "hpBefore": 40, "hpAfter": 52 }
+                ],
+                "pet": { "hpBefore": 100, "hpAfter": 100, "defBase": 25, "powerBefore": 0, "powerAfter": 0 },
+                "boss": { "hpBefore": 900, "hpAfter": 900, "defBase": 50, "powerBefore": 0, "powerAfter": 0 }
+            }
+            """;
+
+        using (var documented = JsonDocument.Parse(documentedJson))
+        {
+            var healing = documented.RootElement.GetProperty("healing");
+
+            // Applicable heal: the member is written, and a real 0 is still written.
+            Assert.True(healing[0].TryGetProperty("cycleOrdinal", out var cycledOrdinal));
+            Assert.Equal(1, cycledOrdinal.GetInt32());
+            Assert.Equal(0, healing[0].GetProperty("amount").GetInt32());
+
+            // Heal belonging to no cycle: omitted entirely, and never null.
+            Assert.False(
+                healing[1].TryGetProperty("cycleOrdinal", out _),
+                "a heal that belongs to no actor cycle omits cycleOrdinal (§3.3.1 presence rule, §3.2.5)");
+            Assert.Equal(12, healing[1].GetProperty("amount").GetInt32());
+            Assert.DoesNotContain("null", documentedJson, StringComparison.Ordinal);
+        }
+
+        // Now the transport produces that same shape. The uncycled heal is expressed
+        // the way the producer expresses it — the member absent from the Domain value —
+        // and the serializer is what must omit it.
+        var trace = new CombatTraceWireDto(
+            BattleId: "battle-heal-cycle-ordinal",
+            ServerSequence: 3,
+            Move: new CombatTraceMoveWireDto(Kind: "swap", FromCell: 0, ToCell: 1),
+            Cycles: [],
+            Damage: [],
+            Healing:
+            [
+                new CombatTraceHealWireDto(
+                    Ordinal: 1,
+                    CycleOrdinal: 1,
+                    Target: "player",
+                    Amount: 0,
+                    RawAmount: 15,
+                    HpBefore: 100,
+                    HpAfter: 100),
+                new CombatTraceHealWireDto(
+                    Ordinal: 2,
+                    CycleOrdinal: null,
+                    Target: "boss",
+                    Amount: 12,
+                    RawAmount: 12,
+                    HpBefore: 40,
+                    HpAfter: 52),
+            ],
+            Pet: new CombatTraceTargetWireDto(
+                HpBefore: 100, HpAfter: 100, DefBase: 25, PowerBefore: 0, PowerAfter: 0),
+            Boss: new CombatTraceTargetWireDto(
+                HpBefore: 900, HpAfter: 900, DefBase: 50, PowerBefore: 0, PowerAfter: 0));
+
+        var json = JsonSerializer.Serialize(trace);
+        using var document = JsonDocument.Parse(json);
+        var written = document.RootElement.GetProperty("healing");
+
+        // The applicable heal writes its ordinal; its real zero amount is written too.
+        Assert.Equal(1, written[0].GetProperty("cycleOrdinal").GetInt32());
+        Assert.Equal(0, written[0].GetProperty("amount").GetInt32());
+
+        // The uncycled heal omits the member: not present, not null, and not 0. The
+        // exact serialized member set is pinned, so neither substitute can slip in.
+        Assert.Equal(
+            new[] { "amount", "hpAfter", "hpBefore", "ordinal", "rawAmount", "target" },
+            written[1].EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.DoesNotContain("cycleOrdinal", written[1].EnumerateObject().Select(p => p.Name));
+        Assert.Equal(12, written[1].GetProperty("amount").GetInt32());
+
+        // The transport writes no `null` for the omitted member anywhere, in either the
+        // delivered document form or the transport's own.
+        Assert.DoesNotContain("null", json, StringComparison.Ordinal);
+
+        // An absent member stays absent across a wire round trip: the omission is the
+        // serializer's, not an artifact of the in-memory value.
+        var roundTripped = JsonSerializer.Deserialize<CombatTraceWireDto>(json);
+        Assert.NotNull(roundTripped);
+        Assert.Equal(1, roundTripped!.Healing[0].CycleOrdinal);
+        Assert.Null(roundTripped.Healing[1].CycleOrdinal);
+        Assert.Equal(0, roundTripped.Healing[0].Amount);
+        Assert.Equal(12, roundTripped.Healing[1].Amount);
+    }
+
+    /// <summary>
+    /// Both omission directions above in the one shape the contract actually pins:
+    /// the serialized member sets of a trace in which every not-applicable member
+    /// is absent and every real zero is written.
+    ///
+    /// <b>It is built from the transport's own DTOs, not from JSON literals</b>, so
+    /// a serializer or DTO change is what makes it fail — the members it pins are
+    /// the ones the producer really does omit today (a card cycle's cells, a status
+    /// tick's <c>cycleOrdinal</c>) plus the ones whose presence a real ignore-null
+    /// condition could silently break (the snapshots' five members, both arrays, and
+    /// the emptiness-preserving <c>matchedGems</c>/<c>cascades</c>).
+    /// </summary>
+    [Fact]
+    public void CombatTraceWireDto_ShouldKeepTheDocumentedMemberSetsWhenNotApplicableMembersAreOmitted()
+    {
+        var trace = new CombatTraceWireDto(
+            BattleId: "battle-member-sets",
+            ServerSequence: 4,
+            Move: new CombatTraceMoveWireDto(Kind: "swap", FromCell: 2, ToCell: 3),
+            Cycles:
+            [
+                new CombatTraceCycleWireDto(
+                    Ordinal: 1,
+                    Actor: "boss",
+                    Action: "card",
+                    FromCell: null,
+                    ToCell: null,
+                    CardId: "earthquake",
+                    MatchedGems: [],
+                    Cascades: []),
+            ],
+            Damage: [StatusTickInstance(ordinal: 1)],
+            Healing: [],
+            Pet: new CombatTraceTargetWireDto(
+                HpBefore: 100, HpAfter: 100, DefBase: 25, PowerBefore: 10, PowerAfter: 10),
+            Boss: new CombatTraceTargetWireDto(
+                HpBefore: 895, HpAfter: 900, DefBase: 50, PowerBefore: 30, PowerAfter: 0));
+
+        var json = JsonSerializer.Serialize(trace);
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+
+        // The root keeps its eight documented members, in camelCase.
+        Assert.Equal(
+            new[] { "battleId", "boss", "cycles", "damage", "healing", "move", "pet", "serverSequence" },
+            root.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        // A card cycle omits the board cells it does not have, and keeps its
+        // identity and its (empty but present) arrays.
+        var cycle = root.GetProperty("cycles")[0];
+        Assert.Equal(
+            new[] { "action", "actor", "cardId", "cascades", "matchedGems", "ordinal" },
+            cycle.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        // A status tick belongs to no cycle.
+        var damage = root.GetProperty("damage")[0];
+        Assert.DoesNotContain("cycleOrdinal", damage.EnumerateObject().Select(p => p.Name));
+
+        // Both snapshots keep all five members: a zero is a value, not an omission.
+        var boss = root.GetProperty("boss");
+        Assert.Equal(
+            new[] { "defBase", "hpAfter", "hpBefore", "powerAfter", "powerBefore" },
+            boss.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal(0, boss.GetProperty("powerAfter").GetInt32());
+
+        Assert.Empty(root.GetProperty("healing").EnumerateArray());
+        Assert.DoesNotContain("null", json, StringComparison.Ordinal);
+    }
+
+    /// <summary>One ATK-gated attack instance naming its cycle.</summary>
+    private static CombatTraceDamageWireDto AttackInstance(int ordinal, int cycleOrdinal) =>
+        new(
+            Ordinal: ordinal,
+            Phase: "attack",
+            CycleOrdinal: cycleOrdinal,
+            Source: "player",
+            Target: "boss",
+            Base: 30,
+            ComboModifier: 1.0,
+            ElementModifier: 1.0,
+            OtherModifiers: 1.0,
+            MitigatedDamage: 20.0,
+            FinalDamage: 20,
+            DefenderDefBase: 50,
+            DefenderDefEffective: 50,
+            ShieldAbsorbed: 0,
+            HpBefore: 900,
+            HpAfter: 880,
+            HpLoss: 20);
+
+    /// <summary>One step-19a tick, which belongs to no actor cycle.</summary>
+    private static CombatTraceDamageWireDto StatusTickInstance(int ordinal) =>
+        new(
+            Ordinal: ordinal,
+            Phase: "statusTick",
+            CycleOrdinal: null,
+            Source: "player",
+            Target: "boss",
+            Base: 50,
+            ComboModifier: 1.0,
+            ElementModifier: 1.0,
+            OtherModifiers: 1.0,
+            MitigatedDamage: 40.0,
+            FinalDamage: 40,
+            DefenderDefBase: 50,
+            DefenderDefEffective: 50,
+            ShieldAbsorbed: 0,
+            HpBefore: 880,
+            HpAfter: 840,
+            HpLoss: 40);
+
+    // =======================================================================
     // Fixtures
     // =======================================================================
 

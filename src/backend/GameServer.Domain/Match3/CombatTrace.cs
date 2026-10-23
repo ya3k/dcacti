@@ -54,7 +54,9 @@ using GameServer.Domain.Combat;
 /// <param name="Healing">
 /// Every heal the round applied, in application order. A heal whose effective
 /// amount is 0 (a heal at full HP) is reported with its raw amount, so it is
-/// distinguishable from "no heal occurred".
+/// distinguishable from "no heal occurred". A heal applied outside any actor
+/// cycle's action is still reported, with no cycle ordinal — the not-applicable
+/// omission <c>SIGNALR_PROTOCOL.md</c> §3.3.1/§3.3.2 item 7 states.
 /// </param>
 /// <param name="Pet">The active Pet's before/after snapshot.</param>
 /// <param name="Boss">The Boss's before/after snapshot.</param>
@@ -253,7 +255,15 @@ public enum CombatTraceDamagePhase
 /// applied amount rather than being omitted (<c>COMBAT_RULES.md</c> §4 item 7).
 /// </summary>
 /// <param name="Ordinal">1-based order of this heal within the round.</param>
-/// <param name="CycleOrdinal">The cycle whose action produced the heal.</param>
+/// <param name="CycleOrdinal">
+/// The cycle whose action produced the heal; <c>null</c> for a heal no actor cycle
+/// produced — the Boss Passive's regeneration, which <c>BOSS_RULES.md</c> §3.3 item 1
+/// applies once per player action outside any cycle's action. <c>null</c> is the
+/// *not-applicable* case, not an unknown: <c>SIGNALR_PROTOCOL.md</c> §3.3.1/§3.3.2
+/// item 7 require it to be omitted from the JSON, so no sentinel stands in for it.
+/// Every heal a cycle's action produces names that cycle
+/// (<see cref="CombatTraceCycle.Ordinal"/>, always ≥ 1).
+/// </param>
 /// <param name="Target">The side that was healed.</param>
 /// <param name="Amount">HP actually restored; 0 at full HP.</param>
 /// <param name="RawAmount">The raw Heal Pool the heal was resolved from.</param>
@@ -261,7 +271,7 @@ public enum CombatTraceDamagePhase
 /// <param name="HpAfter">The target's HP after the heal.</param>
 public readonly record struct CombatTraceHeal(
     int Ordinal,
-    int CycleOrdinal,
+    int? CycleOrdinal,
     DamageParty Target,
     int Amount,
     int RawAmount,
